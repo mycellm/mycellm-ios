@@ -1,5 +1,5 @@
 import Foundation
-import Crypto
+import CryptoKit
 
 /// Master account Ed25519 keypair. Signs device certificates.
 struct AccountKey: Sendable {

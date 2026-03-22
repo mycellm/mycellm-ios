@@ -1,5 +1,5 @@
 import Foundation
-import Crypto
+import CryptoKit
 import SwiftCBOR
 
 /// Identity binding message exchanged after QUIC+TLS connection.

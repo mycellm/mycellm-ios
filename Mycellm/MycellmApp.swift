@@ -3,78 +3,97 @@ import SwiftData
 
 @main
 struct MycellmApp: App {
-    @State private var nodeService = NodeService()
-    @State private var showScreenSaver = false
-    @State private var showSplash = true
-    @State private var lastInteraction = Date()
-
     var body: some Scene {
         WindowGroup {
-            ZStack {
-                MainTabView()
-                    .environment(nodeService)
-                    .preferredColorScheme(.dark)
-                    .opacity(showSplash ? 0 : 1)
+            RootView()
+                .preferredColorScheme(.dark)
+        }
+    }
+}
 
-                if showScreenSaver {
-                    ScreenSaverView {
-                        showScreenSaver = false
-                        resetIdleTimer()
+/// Root view that shows splash immediately, then loads heavy resources.
+struct RootView: View {
+    @State private var phase: LaunchPhase = .splash
+    @State private var nodeService: NodeService?
+    @State private var modelContainer: ModelContainer?
+    @State private var showScreenSaver = false
+    @State private var lastInteraction = Date()
+
+    enum LaunchPhase {
+        case splash
+        case ready
+    }
+
+    var body: some View {
+        ZStack {
+            switch phase {
+            case .splash:
+                SplashView()
+
+            case .ready:
+                if let node = nodeService, let container = modelContainer {
+                    ZStack {
+                        MainTabView()
+                            .environment(node)
+                            .modelContainer(container)
+
+                        if showScreenSaver {
+                            ScreenSaverView {
+                                showScreenSaver = false
+                                lastInteraction = Date()
+                            }
+                        }
                     }
-                    .transition(.opacity)
+                    .onReceive(Timer.publish(every: 30, on: .main, in: .common).autoconnect()) { _ in
+                        checkIdle(node: node)
+                    }
+                    .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
+                        applyKeepAwake(node: node)
+                        lastInteraction = Date()
+                    }
+                    .onChange(of: node.isRunning) { _, _ in applyKeepAwake(node: node) }
                 }
-
-                if showSplash {
-                    SplashView()
-                        .transition(.opacity)
-                }
-            }
-            .animation(.easeInOut(duration: 0.4), value: showSplash)
-            .animation(.easeInOut(duration: 1.0), value: showScreenSaver)
-            .task {
-                // Give the app time to load views, then fade out splash
-                try? await Task.sleep(for: .seconds(1.5))
-                showSplash = false
-            }
-            .onAppear { applyKeepAwake() }
-            .onChange(of: nodeService.isRunning) { _, _ in applyKeepAwake() }
-            .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in
-                // no-op
-            }
-            .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
-                applyKeepAwake()
-                resetIdleTimer()
-            }
-            .onReceive(Timer.publish(every: 30, on: .main, in: .common).autoconnect()) { _ in
-                checkIdle()
             }
         }
-        .modelContainer(for: [
-            StoredModel.self,
-            ChatMessage.self,
-            ChatSession.self,
-            ActivityEvent.self,
-        ])
+        .task {
+            // Heavy init happens here — splash is already visible
+            async let node = await MainActor.run { NodeService() }
+            async let container = await MainActor.run {
+                try? ModelContainer(for: StoredModel.self, ChatMessage.self, ChatSession.self, ActivityEvent.self)
+            }
+
+            let n = await node
+            let c = await container
+
+            // Pre-warm keyboard during splash so first tap is instant
+            await MainActor.run { KeyboardWarmer.warm() }
+
+            // Auto-load last model
+            await n.modelManager.autoLoadLastModel()
+
+            // Auto-start the node
+            await n.start()
+
+            // Wait for boot text to finish
+            try? await Task.sleep(for: .seconds(2.0))
+
+            nodeService = n
+            modelContainer = c
+            phase = .ready
+        }
     }
 
-    private func applyKeepAwake() {
+    private func applyKeepAwake(node: NodeService) {
+        UIApplication.shared.isIdleTimerDisabled = Preferences.shared.keepAwake && node.isRunning
+    }
+
+    private func checkIdle(node: NodeService) {
         let prefs = Preferences.shared
-        let shouldKeepAwake = prefs.keepAwake && nodeService.isRunning
-        UIApplication.shared.isIdleTimerDisabled = shouldKeepAwake
-    }
-
-    private func resetIdleTimer() {
-        lastInteraction = Date()
-    }
-
-    private func checkIdle() {
-        let prefs = Preferences.shared
-        guard prefs.keepAwake && prefs.screenSaverEnabled && nodeService.isRunning else {
+        guard prefs.keepAwake && prefs.screenSaverEnabled && node.isRunning else {
             if showScreenSaver { showScreenSaver = false }
             return
         }
-        let idleMinutes = Date().timeIntervalSince(lastInteraction) / 60.0
-        if idleMinutes >= Double(prefs.screenSaverDelay) && !showScreenSaver {
+        if Date().timeIntervalSince(lastInteraction) / 60.0 >= Double(prefs.screenSaverDelay) && !showScreenSaver {
             showScreenSaver = true
         }
     }

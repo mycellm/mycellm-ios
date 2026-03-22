@@ -1,5 +1,5 @@
 import Foundation
-import Crypto
+import CryptoKit
 
 /// Validates receipts with replay protection and rate limiting.
 /// Wire-compatible with Python `ReceiptValidator`.

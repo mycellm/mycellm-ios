@@ -36,7 +36,7 @@ enum TLSConfig {
 
     /// Generate a self-signed SecIdentity for TLS.
     private static func generateSelfSignedIdentity() throws -> sec_identity_t? {
-        // TODO: Phase 4 — generate PKCS#12 with self-signed cert
+        // TODO: generate PKCS#12 with self-signed cert
         // For now, this is a stub. Network.framework needs a SecIdentity
         // which requires creating a certificate + private key pair in the Keychain.
         return nil

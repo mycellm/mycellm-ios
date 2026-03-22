@@ -20,7 +20,7 @@ actor FleetHandler {
         case "status":
             return (true, ["status": .string("ok")], "")
         case "load_model":
-            // TODO: Phase 2 — delegate to ModelManager
+            // TODO: delegate to ModelManager
             return (false, [:], "not_implemented")
         case "unload_model":
             return (false, [:], "not_implemented")

@@ -76,25 +76,49 @@ struct PeersView: View {
                 .font(.mono(13, weight: .semibold))
                 .foregroundStyle(Color.consoleDim)
 
-            HStack(spacing: 12) {
-                Circle()
-                    .fill(node.networkMode == .standalone ? Color.consoleDim : Color.ledgerGold)
-                    .frame(width: 8, height: 8)
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 12) {
+                    Circle()
+                        .fill(bootstrapDotColor)
+                        .frame(width: 8, height: 8)
 
-                Text(node.networkMode == .standalone ? "Disabled (standalone mode)" : "bootstrap.mycellm.dev:8421")
-                    .font(.mono(12))
-                    .foregroundStyle(Color.consoleText)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(node.networkMode == .standalone
+                            ? "Disabled (standalone mode)"
+                            : Preferences.shared.bootstrapHost + ":" + String(Preferences.shared.quicPort))
+                            .font(.mono(12))
+                            .foregroundStyle(Color.consoleText)
 
-                Spacer()
+                        if node.networkMode != .standalone {
+                            HStack(spacing: 6) {
+                                Text(node.bootstrapState.rawValue)
+                                    .font(.mono(10))
+                                    .foregroundStyle(bootstrapDotColor)
+                                if node.bootstrapTransport != .none {
+                                    Text(node.bootstrapTransport.rawValue)
+                                        .font(.mono(9))
+                                        .foregroundStyle(Color.consoleDim)
+                                        .padding(.horizontal, 5)
+                                        .padding(.vertical, 1)
+                                        .background(Color.consoleDim.opacity(0.15))
+                                        .clipShape(Capsule())
+                                }
+                            }
+                        }
+                    }
 
-                if node.networkMode != .standalone {
-                    Text("Phase 4")
+                    Spacer()
+
+                    if node.bootstrapState == .connected {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(Color.sporeGreen)
+                    }
+                }
+
+                if let error = node.bootstrapError {
+                    Text(error)
                         .font(.mono(9))
-                        .foregroundStyle(Color.consoleDim)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Color.consoleDim.opacity(0.15))
-                        .clipShape(Capsule())
+                        .foregroundStyle(Color.computeRed)
                 }
             }
             .padding(12)
@@ -102,6 +126,16 @@ struct PeersView: View {
             .clipShape(RoundedRectangle(cornerRadius: 10))
         }
         .padding(.horizontal)
+    }
+
+    private var bootstrapDotColor: Color {
+        switch node.bootstrapState {
+        case .connected: .sporeGreen
+        case .connecting, .handshaking, .reconnecting: .ledgerGold
+        case .fallbackHTTP: .relayBlue
+        case .disconnected: .consoleDim
+        case .failed: .computeRed
+        }
     }
 
     private var peersSection: some View {

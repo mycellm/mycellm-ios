@@ -33,6 +33,14 @@ struct ChatView: View {
         let routedVia: String
         let timestamp: Date
         var isStreaming: Bool = false
+        var startTime: Date = Date()
+        var endTime: Date?
+        var tokensPerSecond: Double = 0
+
+        var durationMs: Int? {
+            guard let end = endTime else { return nil }
+            return Int(end.timeIntervalSince(startTime) * 1000)
+        }
     }
 
     var body: some View {
@@ -109,6 +117,12 @@ struct ChatView: View {
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.cardBorder, lineWidth: 1))
 
+            // Center lockup
+            Spacer()
+            Image("MycellmLockup")
+                .resizable()
+                .scaledToFit()
+                .frame(height: 20)
             Spacer()
 
             // Status indicator
@@ -136,7 +150,7 @@ struct ChatView: View {
         case .network:
             return Preferences.shared.remoteEndpoint.isEmpty ? .computeRed : .sporeGreen
         case .onDevice:
-            return .ledgerGold
+            return node.modelManager.loadedModels.isEmpty ? .ledgerGold : .sporeGreen
         }
     }
 
@@ -144,11 +158,16 @@ struct ChatView: View {
         switch route {
         case .network:
             let endpoint = Preferences.shared.remoteEndpoint
-            if endpoint.isEmpty { return "No endpoint" }
+            if endpoint.isEmpty { return "No endpoint — configure in Settings" }
             let model = Preferences.shared.remoteModel
             return model.isEmpty ? endpoint : model
         case .onDevice:
-            return "No model loaded"
+            if let first = node.modelManager.loadedModels.first {
+                return first.name
+            }
+            return node.modelManager.localFiles.isEmpty
+                ? "No models — download from Models tab"
+                : "\(node.modelManager.localFiles.count) on disk — select in Models tab"
         }
     }
 
@@ -198,21 +217,69 @@ struct ChatView: View {
         case .network:
             sendNetworkMessage()
         case .onDevice:
-            messages.append(DisplayMessage(
-                role: "assistant",
-                content: "On-device inference requires a loaded model. Download one from the Models tab, or switch to Network mode.",
-                tokenCount: 0, routedVia: "local", timestamp: Date()
-            ))
+            if node.modelManager.loadedModels.isEmpty {
+                messages.append(DisplayMessage(
+                    role: "assistant",
+                    content: node.modelManager.localFiles.isEmpty
+                        ? "No models downloaded. Go to the Models tab to get one."
+                        : "No model selected. Go to the Models tab and select one.",
+                    tokenCount: 0, routedVia: "local", timestamp: Date()
+                ))
+            } else {
+                sendLocalMessage()
+            }
+        }
+    }
+
+    private func sendLocalMessage() {
+        isGenerating = true
+
+        var placeholder = DisplayMessage(
+            role: "assistant", content: "", tokenCount: 0,
+            routedVia: "on-device", timestamp: Date(), isStreaming: true
+        )
+        placeholder.startTime = Date()
+        messages.append(placeholder)
+        let responseIdx = messages.count - 1
+
+        let chatMessages = messages.dropLast().map { ["role": $0.role, "content": $0.content] }
+
+        streamTask = Task {
+            do {
+                var tokenCount = 0
+                let stream = await node.modelManager.engine.stream(
+                    messages: Array(chatMessages)
+                )
+                for try await chunk in stream {
+                    if Task.isCancelled { break }
+                    messages[responseIdx].content += chunk
+                    tokenCount += 1
+                }
+                let endTime = Date()
+                let elapsed = endTime.timeIntervalSince(messages[responseIdx].startTime)
+                messages[responseIdx].tokenCount = tokenCount
+                messages[responseIdx].endTime = endTime
+                messages[responseIdx].tokensPerSecond = elapsed > 0 ? Double(tokenCount) / elapsed : 0
+                messages[responseIdx].isStreaming = false
+            } catch {
+                if messages[responseIdx].content.isEmpty {
+                    messages[responseIdx].content = "Error: \(error.localizedDescription)"
+                }
+                messages[responseIdx].endTime = Date()
+                messages[responseIdx].isStreaming = false
+            }
+            isGenerating = false
         }
     }
 
     private func sendNetworkMessage() {
         isGenerating = true
 
-        let placeholder = DisplayMessage(
+        var placeholder = DisplayMessage(
             role: "assistant", content: "", tokenCount: 0,
             routedVia: "network", timestamp: Date(), isStreaming: true
         )
+        placeholder.startTime = Date()
         messages.append(placeholder)
         let responseIdx = messages.count - 1
 
@@ -227,22 +294,55 @@ struct ChatView: View {
         streamTask = Task {
             do {
                 var tokenCount = 0
-                for try await chunk in await remoteClient.stream(
+                var gotFirstToken = false
+
+                // Timeout: 30s for first token, then no timeout during streaming
+                let stream = await remoteClient.stream(
                     model: model,
                     messages: Array(chatMessages)
-                ) {
+                )
+
+                for try await chunk in stream {
+                    if Task.isCancelled { break }
+                    if !gotFirstToken {
+                        gotFirstToken = true
+                        messages[responseIdx].content = "" // clear "thinking" state
+                    }
                     messages[responseIdx].content += chunk
                     tokenCount += 1
                 }
+                let endTime = Date()
+                let elapsed = endTime.timeIntervalSince(messages[responseIdx].startTime)
                 messages[responseIdx].tokenCount = tokenCount
+                messages[responseIdx].endTime = endTime
+                messages[responseIdx].tokensPerSecond = elapsed > 0 ? Double(tokenCount) / elapsed : 0
+                messages[responseIdx].isStreaming = false
+            } catch is CancellationError {
+                messages[responseIdx].endTime = Date()
                 messages[responseIdx].isStreaming = false
             } catch {
+                let errMsg = error.localizedDescription
                 if messages[responseIdx].content.isEmpty {
-                    messages[responseIdx].content = "Error: \(error.localizedDescription)"
+                    messages[responseIdx].content = errMsg
+                    messages[responseIdx].isStreaming = false
+                } else {
+                    // Had partial content, append error
+                    messages[responseIdx].content += "\n\n[Error: \(errMsg)]"
+                    messages[responseIdx].isStreaming = false
                 }
-                messages[responseIdx].isStreaming = false
             }
             isGenerating = false
+        }
+
+        // Connection timeout — cancel if no response after 30s
+        Task {
+            try? await Task.sleep(for: .seconds(30))
+            guard isGenerating,
+                  messages.indices.contains(responseIdx),
+                  messages[responseIdx].content.isEmpty else { return }
+            messages[responseIdx].content = "Connection timed out. Check your endpoint in Settings."
+            messages[responseIdx].isStreaming = false
+            stopGenerating()
         }
     }
 
@@ -272,36 +372,72 @@ struct MessageBubble: View {
     let message: ChatView.DisplayMessage
 
     var isUser: Bool { message.role == "user" }
+    var isThinking: Bool { message.isStreaming && message.content.isEmpty }
 
     var body: some View {
         HStack {
             if isUser { Spacer(minLength: 60) }
 
             VStack(alignment: isUser ? .trailing : .leading, spacing: 4) {
-                Text(message.content.isEmpty && message.isStreaming ? "…" : message.content)
-                    .font(.mono(13))
-                    .foregroundStyle(Color.consoleText)
-                    .textSelection(.enabled)
+                if isThinking {
+                    ThinkingIndicator()
+                } else if isUser {
+                    Text(message.content)
+                        .font(.mono(13))
+                        .foregroundStyle(Color.consoleText)
+                        .textSelection(.enabled)
+                } else {
+                    // Render markdown for assistant messages
+                    Text(LocalizedStringKey(message.content))
+                        .font(.mono(13))
+                        .foregroundStyle(Color.consoleText)
+                        .textSelection(.enabled)
+                        .tint(Color.relayBlue)
+                }
 
-                HStack(spacing: 6) {
-                    if message.tokenCount > 0 {
-                        Text("\(message.tokenCount) tokens")
-                            .font(.mono(9))
-                            .foregroundStyle(Color.consoleDim)
-                    }
-                    if !isUser && message.routedVia == "network" {
-                        HStack(spacing: 2) {
-                            Image(systemName: "globe")
-                                .font(.system(size: 8))
-                            Text("network")
-                                .font(.mono(9))
+                // Stats bar
+                if !isUser && !isThinking {
+                    HStack(spacing: 8) {
+                        if message.isStreaming {
+                            BlinkingCursor()
                         }
-                        .foregroundStyle(Color.relayBlue)
-                    }
-                    if message.isStreaming {
-                        ProgressView()
-                            .scaleEffect(0.5)
-                            .frame(width: 12, height: 12)
+
+                        // Route badge
+                        if message.routedVia == "network" {
+                            HStack(spacing: 2) {
+                                Image(systemName: "globe")
+                                    .font(.system(size: 8))
+                                Text("network")
+                                    .font(.mono(9))
+                            }
+                            .foregroundStyle(Color.relayBlue)
+                        } else if message.routedVia == "on-device" {
+                            HStack(spacing: 2) {
+                                Image(systemName: "ipad")
+                                    .font(.system(size: 8))
+                                Text("on-device")
+                                    .font(.mono(9))
+                            }
+                            .foregroundStyle(Color.sporeGreen)
+                        }
+
+                        if message.tokenCount > 0 {
+                            Text("\(message.tokenCount) tok")
+                                .font(.mono(9))
+                                .foregroundStyle(Color.consoleDim)
+                        }
+
+                        if message.tokensPerSecond > 0 {
+                            Text(String(format: "%.1f t/s", message.tokensPerSecond))
+                                .font(.mono(9))
+                                .foregroundStyle(Color.consoleDim)
+                        }
+
+                        if let ms = message.durationMs {
+                            Text(ms < 1000 ? "\(ms)ms" : String(format: "%.1fs", Double(ms) / 1000))
+                                .font(.mono(9))
+                                .foregroundStyle(Color.consoleDim)
+                        }
                     }
                 }
             }
@@ -311,5 +447,39 @@ struct MessageBubble: View {
 
             if !isUser { Spacer(minLength: 60) }
         }
+    }
+}
+
+/// Animated thinking dots: ● ● ●
+struct ThinkingIndicator: View {
+    @State private var phase = 0
+    private let timer = Timer.publish(every: 0.4, on: .main, in: .common).autoconnect()
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(0..<3, id: \.self) { i in
+                Circle()
+                    .fill(Color.consoleDim)
+                    .frame(width: 6, height: 6)
+                    .opacity(i <= phase ? 1.0 : 0.3)
+            }
+        }
+        .onReceive(timer) { _ in
+            phase = (phase + 1) % 4
+        }
+    }
+}
+
+/// Blinking cursor while streaming
+struct BlinkingCursor: View {
+    @State private var visible = true
+    private let timer = Timer.publish(every: 0.5, on: .main, in: .common).autoconnect()
+
+    var body: some View {
+        Text("▊")
+            .font(.mono(10))
+            .foregroundStyle(Color.sporeGreen)
+            .opacity(visible ? 1 : 0)
+            .onReceive(timer) { _ in visible.toggle() }
     }
 }

@@ -1,7 +1,7 @@
 import Foundation
 
 /// OpenAI-compatible API routes: /v1/chat/completions, /v1/models
-/// Phase 3 will wire these to Hummingbird handlers.
+/// OpenAI-compatible API route handlers.
 enum OpenAIRoutes {
     /// GET /v1/models — list available models
     static func listModels(manager: ModelManager) -> [String: Any] {

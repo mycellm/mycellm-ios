@@ -1,113 +1,165 @@
 import Foundation
 import Observation
 
-/// Downloads GGUF models from HuggingFace.
+/// Downloads GGUF models from HuggingFace with real-time progress.
 @Observable
-final class ModelDownloader: @unchecked Sendable {
+final class ModelDownloader: NSObject, @unchecked Sendable, URLSessionDownloadDelegate {
     private(set) var activeDownloads: [Download] = []
+    private var tasks: [Int: UUID] = [:]  // taskIdentifier → download ID
+    private var session: URLSession!
 
-    struct Download: Identifiable, Sendable {
+    override init() {
+        super.init()
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForResource = 3600
+        session = URLSession(configuration: config, delegate: self, delegateQueue: .main)
+    }
+
+    struct Download: Identifiable {
         let id = UUID()
         let repoId: String
         let filename: String
         var progress: Double = 0.0
         var bytesDownloaded: Int64 = 0
         var totalBytes: Int64 = 0
+        var bytesPerSecond: Int64 = 0
         var state: State = .pending
+        var startTime: Date = Date()
+        var task: URLSessionDownloadTask?
 
-        enum State: Sendable {
-            case pending
-            case downloading
-            case completed
-            case failed(String)
-            case cancelled
+        enum State: String {
+            case pending = "Pending"
+            case downloading = "Downloading"
+            case completed = "Completed"
+            case failed = "Failed"
+            case cancelled = "Cancelled"
         }
 
         var progressDescription: String {
             let downloaded = ByteCountFormatter.string(fromByteCount: bytesDownloaded, countStyle: .file)
             if totalBytes > 0 {
                 let total = ByteCountFormatter.string(fromByteCount: totalBytes, countStyle: .file)
-                return "\(downloaded) / \(total)"
+                let pct = Int(progress * 100)
+                return "\(downloaded) / \(total) (\(pct)%)"
             }
             return downloaded
         }
+
+        var speedDescription: String {
+            guard bytesPerSecond > 0 else { return "" }
+            return ByteCountFormatter.string(fromByteCount: bytesPerSecond, countStyle: .file) + "/s"
+        }
+
+        var etaDescription: String {
+            guard bytesPerSecond > 0, totalBytes > bytesDownloaded else { return "" }
+            let remaining = totalBytes - bytesDownloaded
+            let seconds = Int(remaining / bytesPerSecond)
+            if seconds < 60 { return "\(seconds)s" }
+            if seconds < 3600 { return "\(seconds / 60)m \(seconds % 60)s" }
+            return "\(seconds / 3600)h \(seconds % 3600 / 60)m"
+        }
     }
 
-    /// Download a GGUF file from HuggingFace.
-    func download(repoId: String, filename: String) async throws {
+    /// Start downloading a GGUF file from HuggingFace.
+    func download(repoId: String, filename: String) {
         let urlString = "https://huggingface.co/\(repoId)/resolve/main/\(filename)"
-        guard let url = URL(string: urlString) else {
-            throw MycellmError.inferenceError("Invalid download URL")
-        }
+        guard let url = URL(string: urlString) else { return }
 
-        var download = Download(repoId: repoId, filename: filename)
-        download.state = .downloading
-        activeDownloads.append(download)
-        let downloadId = download.id
+        var dl = Download(repoId: repoId, filename: filename)
+        dl.state = .downloading
+        dl.startTime = Date()
 
-        let destination = ModelManager.modelsDirectory.appendingPathComponent(filename)
+        let task = session.downloadTask(with: url)
+        dl.task = task
+        tasks[task.taskIdentifier] = dl.id
+        activeDownloads.append(dl)
 
-        // Exclude large files from iCloud backup
-        var destURL = destination
-        var resourceValues = URLResourceValues()
-        resourceValues.isExcludedFromBackup = true
-
-        do {
-            let (asyncBytes, response) = try await URLSession.shared.bytes(from: url)
-            let totalBytes = Int64(response.expectedContentLength)
-            updateDownload(id: downloadId) { $0.totalBytes = totalBytes }
-
-            let fileHandle = try FileHandle(forWritingTo: {
-                FileManager.default.createFile(atPath: destination.path, contents: nil)
-                return destination
-            }())
-
-            var bytesWritten: Int64 = 0
-            var buffer = Data()
-            let chunkSize = 1024 * 1024 // 1MB chunks
-
-            for try await byte in asyncBytes {
-                buffer.append(byte)
-                if buffer.count >= chunkSize {
-                    fileHandle.write(buffer)
-                    bytesWritten += Int64(buffer.count)
-                    buffer.removeAll(keepingCapacity: true)
-                    let progress = totalBytes > 0 ? Double(bytesWritten) / Double(totalBytes) : 0
-                    updateDownload(id: downloadId) {
-                        $0.bytesDownloaded = bytesWritten
-                        $0.progress = progress
-                    }
-                }
-            }
-            // Flush remaining
-            if !buffer.isEmpty {
-                fileHandle.write(buffer)
-                bytesWritten += Int64(buffer.count)
-            }
-            fileHandle.closeFile()
-
-            // Mark as excluded from backup
-            try destURL.setResourceValues(resourceValues)
-
-            updateDownload(id: downloadId) {
-                $0.state = .completed
-                $0.progress = 1.0
-                $0.bytesDownloaded = bytesWritten
-            }
-        } catch {
-            updateDownload(id: downloadId) { $0.state = .failed(error.localizedDescription) }
-            throw error
-        }
+        task.resume()
     }
 
     func cancelDownload(id: UUID) {
-        updateDownload(id: id) { $0.state = .cancelled }
-        // TODO: cancel URLSession task
+        guard let idx = activeDownloads.firstIndex(where: { $0.id == id }) else { return }
+        activeDownloads[idx].task?.cancel()
+        activeDownloads[idx].state = .cancelled
     }
 
-    private func updateDownload(id: UUID, update: (inout Download) -> Void) {
-        if let idx = activeDownloads.firstIndex(where: { $0.id == id }) {
-            update(&activeDownloads[idx])
+    func removeDownload(id: UUID) {
+        activeDownloads.removeAll { $0.id == id }
+    }
+
+    // MARK: - URLSessionDownloadDelegate
+
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64, totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
+        guard let dlId = tasks[downloadTask.taskIdentifier],
+              let idx = activeDownloads.firstIndex(where: { $0.id == dlId }) else { return }
+
+        let elapsed = max(1, Date().timeIntervalSince(activeDownloads[idx].startTime))
+        let speed = Int64(Double(totalBytesWritten) / elapsed)
+
+        activeDownloads[idx].bytesDownloaded = totalBytesWritten
+        activeDownloads[idx].totalBytes = totalBytesExpectedToWrite > 0 ? totalBytesExpectedToWrite : 0
+        activeDownloads[idx].progress = totalBytesExpectedToWrite > 0
+            ? Double(totalBytesWritten) / Double(totalBytesExpectedToWrite)
+            : 0
+        activeDownloads[idx].bytesPerSecond = speed
+    }
+
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
+        guard let dlId = tasks[downloadTask.taskIdentifier],
+              let idx = activeDownloads.firstIndex(where: { $0.id == dlId }) else { return }
+
+        // Check HTTP status
+        if let httpResponse = downloadTask.response as? HTTPURLResponse,
+           httpResponse.statusCode != 200 {
+            activeDownloads[idx].state = .failed
+            tasks.removeValue(forKey: downloadTask.taskIdentifier)
+            return
         }
+
+        let filename = activeDownloads[idx].filename
+        let destination = ModelManager.modelsDirectory.appendingPathComponent(filename)
+
+        do {
+            try? FileManager.default.removeItem(at: destination)
+            try FileManager.default.moveItem(at: location, to: destination)
+
+            // Verify GGUF magic
+            if let fh = FileHandle(forReadingAtPath: destination.path) {
+                let magic = fh.readData(ofLength: 4)
+                fh.closeFile()
+                guard magic == Data([0x47, 0x47, 0x55, 0x46]) else {
+                    try? FileManager.default.removeItem(at: destination)
+                    activeDownloads[idx].state = .failed
+                    tasks.removeValue(forKey: downloadTask.taskIdentifier)
+                    return
+                }
+            }
+
+            // Exclude from iCloud backup
+            var destURL = destination
+            var resourceValues = URLResourceValues()
+            resourceValues.isExcludedFromBackup = true
+            try destURL.setResourceValues(resourceValues)
+
+            activeDownloads[idx].state = .completed
+            activeDownloads[idx].progress = 1.0
+        } catch {
+            activeDownloads[idx].state = .failed
+        }
+
+        tasks.removeValue(forKey: downloadTask.taskIdentifier)
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        guard let error = error,
+              let dlId = tasks[task.taskIdentifier],
+              let idx = activeDownloads.firstIndex(where: { $0.id == dlId }) else { return }
+
+        if (error as NSError).code == NSURLErrorCancelled {
+            activeDownloads[idx].state = .cancelled
+        } else {
+            activeDownloads[idx].state = .failed
+        }
+        tasks.removeValue(forKey: task.taskIdentifier)
     }
 }

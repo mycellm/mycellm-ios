@@ -1,5 +1,5 @@
 import Foundation
-import Crypto
+import CryptoKit
 
 /// Per-device Ed25519 keypair. Signs NodeHello messages and receipts.
 struct DeviceKey: Sendable {

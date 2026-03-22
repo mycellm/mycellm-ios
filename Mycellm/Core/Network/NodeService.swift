@@ -13,12 +13,27 @@ final class NodeService: @unchecked Sendable {
 
     // MARK: - State
     private(set) var isRunning = false
-    private(set) var networkMode: NetworkMode = .standalone
+    private(set) var networkMode: NetworkMode = .public
+
+    // MARK: - Models
+    let modelManager = ModelManager()
+    let modelDownloader = ModelDownloader()
+
+    // MARK: - Services
+    private let httpServer = HTTPServer()
+    private let quicTransport = QUICTransport()
+    let bootstrapClient = BootstrapClient()
+    private let peerManager = PeerManager()
+
+    // MARK: - Network Status
+    private(set) var bootstrapState: BootstrapClient.ConnectionState = .disconnected
+    private(set) var bootstrapTransport: BootstrapClient.Transport = .none
+    private(set) var bootstrapError: String?
 
     // MARK: - Stats
     private(set) var totalInferences: Int = 0
     private(set) var connectedPeers: Int = 0
-    private(set) var loadedModels: Int = 0
+    var loadedModels: Int { modelManager.loadedModels.count }
     private(set) var creditBalance: Double = 0.0
 
     // MARK: - Activity
@@ -26,8 +41,12 @@ final class NodeService: @unchecked Sendable {
 
     // MARK: - Initialization
 
+    @MainActor
     init() {
         loadOrCreateIdentity()
+        networkMode = Preferences.shared.networkMode
+        creditBalance = 100.0  // Seed balance for new nodes
+        modelManager.scanLocalModels()
     }
 
     private func loadOrCreateIdentity() {
@@ -67,12 +86,135 @@ final class NodeService: @unchecked Sendable {
         guard !isRunning else { return }
         isRunning = true
         addEvent(.nodeStarted)
+
+        let prefs = await MainActor.run { Preferences.shared }
+
+        // Start HTTP server if enabled
+        if prefs.httpServerEnabled || networkMode.apiServerEnabled {
+            do {
+                try await httpServer.start(port: prefs.apiPort, nodeService: self)
+                addEvent(.nodeStarted)
+            } catch {
+                addEvent(.error("HTTP server failed: \(error.localizedDescription)"))
+            }
+        }
+
+        // Start QUIC transport if network mode requires it
+        if networkMode.usesQUIC {
+            do {
+                try await quicTransport.startServer(port: UInt16(prefs.quicPort))
+
+                // Set up message dispatch
+                await quicTransport.setMessageHandler { [weak self] envelope, peer in
+                    await self?.handleMessage(envelope, from: peer)
+                }
+            } catch {
+                addEvent(.error("QUIC transport failed: \(error.localizedDescription)"))
+            }
+        }
+
+        modelManager.scanLocalModels()
+
+        // Connect to bootstrap if network mode requires it
+        if networkMode.usesBootstrap {
+            await bootstrapClient.configure(
+                host: prefs.bootstrapHost,
+                port: UInt16(prefs.quicPort)
+            )
+
+            // Track state changes for UI
+            let nodeRef = self
+            await bootstrapClient.setStateHandler { @Sendable state, transport, error in
+                Task { @MainActor in
+                    nodeRef.bootstrapState = state
+                    nodeRef.bootstrapTransport = transport
+                    nodeRef.bootstrapError = error
+                    switch state {
+                    case .connected:
+                        nodeRef.addEvent(.peerConnected("bootstrap (\(transport.rawValue))"))
+                    case .failed:
+                        nodeRef.addEvent(.error("Bootstrap: \(error ?? "failed")"))
+                    case .fallbackHTTP:
+                        nodeRef.addEvent(.error("Bootstrap: falling back to HTTP"))
+                    default:
+                        break
+                    }
+                }
+            }
+
+            let caps = Capabilities(
+                models: modelManager.loadedModels.map { m in
+                    ModelCapability(name: m.name, backend: "llama.cpp", scope: m.scope)
+                },
+                hardware: HardwareInfo.capabilitiesHardware(),
+                role: "seeder",
+                version: "0.1.0"
+            )
+
+            addEvent(.networkModeChanged(networkMode))
+            await bootstrapClient.connect(peerId: peerId, capabilities: caps)
+        }
     }
 
     func stop() async {
         guard isRunning else { return }
+        await httpServer.stop()
+        await quicTransport.stopServer()
+        await bootstrapClient.disconnect()
+        bootstrapState = .disconnected
+        bootstrapTransport = .none
+        bootstrapError = nil
         isRunning = false
         addEvent(.nodeStopped)
+    }
+
+    // MARK: - Message Dispatch
+
+    private func handleMessage(_ envelope: MessageEnvelope, from peer: PeerConnection) async {
+        switch envelope.type {
+        case .ping:
+            let pong = MessageBuilders.pong(from: peerId, requestId: envelope.id)
+            try? await quicTransport.send(pong, to: peer)
+
+        case .inferenceReq:
+            guard let model = envelope.payload["model"]?.stringValue else { return }
+            let messages = envelope.payload["messages"]?.arrayValue?.compactMap { item -> [String: String]? in
+                guard let m = item.mapValue else { return nil }
+                return ["role": m["role"]?.stringValue ?? "", "content": m["content"]?.stringValue ?? ""]
+            } ?? []
+            let temp = envelope.payload["temperature"]?.doubleValue ?? 0.7
+            let maxTok = envelope.payload["max_tokens"]?.intValue ?? 2048
+
+            do {
+                let result = try await modelManager.engine.complete(
+                    messages: messages, temperature: temp, maxTokens: maxTok
+                )
+                let resp = MessageBuilders.inferenceResponse(
+                    from: peerId, requestId: envelope.id,
+                    text: result.text, model: model,
+                    promptTokens: result.promptTokens,
+                    completionTokens: result.completionTokens
+                )
+                try? await quicTransport.send(resp, to: peer)
+            } catch {
+                let errMsg = MessageBuilders.error(
+                    from: peerId, requestId: envelope.id,
+                    code: .backendError, message: error.localizedDescription
+                )
+                try? await quicTransport.send(errMsg, to: peer)
+            }
+
+        case .peerQuery:
+            let resp = MessageBuilders.peerResponse(from: peerId, requestId: envelope.id, peers: [])
+            try? await quicTransport.send(resp, to: peer)
+
+        case .fleetCommand:
+            // TODO: delegate to FleetHandler
+            break
+
+        default:
+            break
+        }
     }
 
     func setNetworkMode(_ mode: NetworkMode) {

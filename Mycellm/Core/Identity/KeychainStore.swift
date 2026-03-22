@@ -1,6 +1,6 @@
 import Foundation
 import Security
-import Crypto
+import CryptoKit
 
 /// Secure persistence for Ed25519 keys in the iOS Keychain.
 enum KeychainStore {

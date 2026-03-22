@@ -2,10 +2,11 @@ import Foundation
 import Network
 
 /// Single peer lifecycle over a QUIC connection.
-final class PeerConnection: Sendable {
-    let peerId: String
+final class PeerConnection: @unchecked Sendable {
+    private(set) var peerId: String
     let remoteAddress: String
     let connectedAt: Date
+    var nwConnection: NWConnection?
 
     enum State: Sendable {
         case connecting
@@ -15,24 +16,25 @@ final class PeerConnection: Sendable {
         case closed
     }
 
-    private let _state: UnsafeSendableBox<State>
-    var state: State { _state.value }
+    private(set) var state: State = .connecting
 
     init(peerId: String, remoteAddress: String) {
         self.peerId = peerId
         self.remoteAddress = remoteAddress
         self.connectedAt = Date()
-        self._state = UnsafeSendableBox(.connecting)
+    }
+
+    func setState(_ newState: State) {
+        state = newState
+    }
+
+    func setPeerId(_ id: String) {
+        peerId = id
     }
 
     func close() {
-        _state.value = .closed
-        // TODO: Phase 4 — NWConnection.cancel()
+        state = .closed
+        nwConnection?.cancel()
+        nwConnection = nil
     }
-}
-
-/// Simple thread-safe box. Only used internally for connection state.
-final class UnsafeSendableBox<T>: @unchecked Sendable {
-    var value: T
-    init(_ value: T) { self.value = value }
 }

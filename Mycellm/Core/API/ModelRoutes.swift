@@ -27,10 +27,21 @@ enum ModelRoutes {
     }
 
     /// Hardware-aware suggested models based on available RAM.
+    /// All URLs verified to be publicly accessible (no auth gating).
     static func suggestedModels() -> [[String: Any]] {
         let memGB = HardwareInfo.totalMemoryGB
         var suggestions: [[String: Any]] = []
 
+        if memGB >= 4 {
+            suggestions.append([
+                "name": "SmolLM2-1.7B-Instruct",
+                "repo_id": "bartowski/SmolLM2-1.7B-Instruct-GGUF",
+                "filename": "SmolLM2-1.7B-Instruct-Q4_K_M.gguf",
+                "size_gb": 1.1,
+                "params_b": 1.7,
+                "fit": "comfortable",
+            ])
+        }
         if memGB >= 4 {
             suggestions.append([
                 "name": "Qwen2.5-1.5B-Instruct",
@@ -38,6 +49,16 @@ enum ModelRoutes {
                 "filename": "qwen2.5-1.5b-instruct-q4_k_m.gguf",
                 "size_gb": 1.1,
                 "params_b": 1.5,
+                "fit": "comfortable",
+            ])
+        }
+        if memGB >= 6 {
+            suggestions.append([
+                "name": "Gemma-2-2B-IT",
+                "repo_id": "bartowski/gemma-2-2b-it-GGUF",
+                "filename": "gemma-2-2b-it-Q4_K_M.gguf",
+                "size_gb": 1.6,
+                "params_b": 2.0,
                 "fit": "comfortable",
             ])
         }
@@ -53,25 +74,51 @@ enum ModelRoutes {
         }
         if memGB >= 8 {
             suggestions.append([
-                "name": "Phi-4-mini-instruct",
-                "repo_id": "bartowski/phi-4-mini-instruct-GGUF",
-                "filename": "phi-4-mini-instruct-Q4_K_M.gguf",
-                "size_gb": 2.5,
+                "name": "Phi-3.5-mini-instruct",
+                "repo_id": "bartowski/Phi-3.5-mini-instruct-GGUF",
+                "filename": "Phi-3.5-mini-instruct-Q4_K_M.gguf",
+                "size_gb": 2.2,
                 "params_b": 3.8,
                 "fit": "comfortable",
             ])
         }
-        if memGB >= 12 {
-            suggestions.append([
-                "name": "Qwen2.5-7B-Instruct",
-                "repo_id": "Qwen/Qwen2.5-7B-Instruct-GGUF",
-                "filename": "qwen2.5-7b-instruct-q4_k_m.gguf",
-                "size_gb": 4.7,
-                "params_b": 7.0,
-                "fit": memGB >= 16 ? "comfortable" : "tight",
-            ])
-        }
 
         return suggestions
+    }
+
+    /// Search HuggingFace for GGUF models.
+    static func searchHuggingFace(query: String) async -> [[String: Any]] {
+        let searchQuery = query.isEmpty ? "gguf" : "\(query) gguf"
+        guard let encoded = searchQuery.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
+              let url = URL(string: "https://huggingface.co/api/models?search=\(encoded)&filter=gguf&sort=downloads&direction=-1&limit=20") else {
+            return []
+        }
+
+        do {
+            let (data, _) = try await URLSession.shared.data(from: url)
+            guard let models = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return [] }
+
+            return models.compactMap { model -> [String: Any]? in
+                guard let modelId = model["modelId"] as? String,
+                      let downloads = model["downloads"] as? Int else { return nil }
+
+                // Find GGUF files in siblings
+                let siblings = model["siblings"] as? [[String: Any]] ?? []
+                let ggufFiles = siblings
+                    .compactMap { $0["rfilename"] as? String }
+                    .filter { $0.hasSuffix(".gguf") && ($0.contains("Q4_K_M") || $0.contains("q4_k_m")) }
+
+                let filename = ggufFiles.first ?? ""
+                return [
+                    "repo_id": modelId,
+                    "name": modelId.components(separatedBy: "/").last ?? modelId,
+                    "filename": filename,
+                    "downloads": downloads,
+                    "has_q4": !ggufFiles.isEmpty,
+                ]
+            }
+        } catch {
+            return []
+        }
     }
 }

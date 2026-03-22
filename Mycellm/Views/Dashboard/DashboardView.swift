@@ -56,6 +56,29 @@ struct DashboardView: View {
                     }
                     .padding(.horizontal)
 
+                    // First-run nudge
+                    if node.modelManager.localFiles.isEmpty {
+                        HStack(spacing: 12) {
+                            Image("MycellmLogo-red")
+                                .resizable()
+                                .scaledToFit()
+                                .frame(width: 32, height: 32)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Get Started")
+                                    .font(.mono(13, weight: .semibold))
+                                    .foregroundStyle(Color.consoleText)
+                                Text("Download a model from the Models tab to start chatting on-device and contributing to the network.")
+                                    .font(.mono(11))
+                                    .foregroundStyle(Color.consoleDim)
+                            }
+                        }
+                        .padding(14)
+                        .background(Color.sporeGreen.opacity(0.08))
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.sporeGreen.opacity(0.2), lineWidth: 1))
+                        .padding(.horizontal)
+                    }
+
                     // Start/Stop toggle
                     nodeToggle
 
@@ -88,6 +111,27 @@ struct DashboardView: View {
 
             Spacer()
 
+            // Bootstrap status (when not standalone)
+            if node.networkMode != .standalone && node.isRunning {
+                HStack(spacing: 4) {
+                    Circle()
+                        .fill(bootstrapStatusColor)
+                        .frame(width: 6, height: 6)
+                    Text(node.bootstrapState.rawValue)
+                        .font(.mono(9))
+                        .foregroundStyle(Color.consoleDim)
+                    if node.bootstrapTransport != .none {
+                        Text(node.bootstrapTransport.rawValue)
+                            .font(.mono(8))
+                            .foregroundStyle(Color.consoleDim)
+                    }
+                }
+                .padding(.horizontal, 6)
+                .padding(.vertical, 3)
+                .background(Color.cardBackground)
+                .clipShape(Capsule())
+            }
+
             Text(node.networkMode.displayName)
                 .font(.mono(11, weight: .medium))
                 .foregroundStyle(Color.relayBlue)
@@ -96,6 +140,16 @@ struct DashboardView: View {
                 .background(Color.relayBlue.opacity(0.15), in: Capsule())
         }
         .padding(.horizontal)
+    }
+
+    private var bootstrapStatusColor: Color {
+        switch node.bootstrapState {
+        case .connected: Color.sporeGreen
+        case .connecting, .handshaking, .reconnecting: Color.ledgerGold
+        case .fallbackHTTP: Color.relayBlue
+        case .disconnected: Color.consoleDim
+        case .failed: Color.computeRed
+        }
     }
 
     private var nodeToggle: some View {

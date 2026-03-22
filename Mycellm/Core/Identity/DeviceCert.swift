@@ -1,5 +1,5 @@
 import Foundation
-import Crypto
+import CryptoKit
 import SwiftCBOR
 
 /// Certificate binding a device key to an account, signed by the account master key.

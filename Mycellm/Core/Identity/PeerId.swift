@@ -1,5 +1,5 @@
 import Foundation
-import Crypto
+import CryptoKit
 
 /// PeerId = SHA256(raw_32_byte_ed25519_pubkey).hexdigest()[:32]
 ///

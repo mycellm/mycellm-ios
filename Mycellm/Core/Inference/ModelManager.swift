@@ -6,8 +6,11 @@ final class ModelManager: @unchecked Sendable {
     private(set) var loadedModels: [LoadedModel] = []
     private(set) var localFiles: [LocalModelFile] = []
     private(set) var isScanning = false
+    private(set) var isLoading = false
+    private(set) var loadingModelName: String?
+    private(set) var loadError: String?
 
-    private let engine = InferenceEngine()
+    let engine = InferenceEngine()
 
     struct LoadedModel: Identifiable, Sendable {
         let id = UUID()
@@ -68,15 +71,30 @@ final class ModelManager: @unchecked Sendable {
             .sorted { $0.filename < $1.filename }
     }
 
-    /// Load a model from disk.
+    /// Load a model from disk into the inference engine.
     func loadModel(file: LocalModelFile, scope: String = "home") async throws {
-        try await engine.loadModel(path: file.path, name: file.filename)
-        let loaded = LoadedModel(
-            name: file.filename, filename: file.filename,
-            sizeBytes: file.sizeBytes, scope: scope, loadedAt: Date()
-        )
-        loadedModels.append(loaded)
-        scanLocalModels() // refresh isLoaded flags
+        isLoading = true
+        loadingModelName = file.filename
+        loadError = nil
+
+        do {
+            try await engine.loadModel(path: file.path, name: file.filename)
+            let loaded = LoadedModel(
+                name: file.filename, filename: file.filename,
+                sizeBytes: file.sizeBytes, scope: scope, loadedAt: Date()
+            )
+            loadedModels = [loaded] // Only one model at a time on iOS
+            isLoading = false
+            loadingModelName = nil
+            // Remember for auto-load on next launch
+            await MainActor.run { Preferences.shared.lastLoadedModel = file.filename }
+            scanLocalModels()
+        } catch {
+            isLoading = false
+            loadingModelName = nil
+            loadError = error.localizedDescription
+            throw error
+        }
     }
 
     /// Unload a model.
@@ -95,6 +113,23 @@ final class ModelManager: @unchecked Sendable {
                 sizeBytes: m.sizeBytes, scope: scope, loadedAt: m.loadedAt
             )
         }
+    }
+
+    /// Delete a model file from disk.
+    func deleteModel(file: LocalModelFile) {
+        try? FileManager.default.removeItem(atPath: file.path)
+        scanLocalModels()
+    }
+
+    /// Auto-load the last used model if available and RAM allows.
+    func autoLoadLastModel() async {
+        let lastFilename = await MainActor.run { Preferences.shared.lastLoadedModel }
+        guard loadedModels.isEmpty,
+              let filename = lastFilename,
+              let file = localFiles.first(where: { $0.filename == filename }),
+              file.ramFit != .tooLarge else { return }
+
+        try? await loadModel(file: file, scope: "public")
     }
 
     /// Total size of all downloaded models.

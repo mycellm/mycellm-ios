@@ -27,8 +27,18 @@ final class Preferences: @unchecked Sendable {
     // MARK: - Network
 
     var networkMode: NetworkMode {
-        get { NetworkMode(rawValue: defaults.string(forKey: "network_mode") ?? "standalone") ?? .standalone }
+        get { NetworkMode(rawValue: defaults.string(forKey: "network_mode") ?? "public") ?? .public }
         set { defaults.set(newValue.rawValue, forKey: "network_mode") }
+    }
+
+    var lastLoadedModel: String? {
+        get { defaults.string(forKey: "last_loaded_model") }
+        set { defaults.set(newValue, forKey: "last_loaded_model") }
+    }
+
+    var hasCompletedOnboarding: Bool {
+        get { defaults.bool(forKey: "has_completed_onboarding") }
+        set { defaults.set(newValue, forKey: "has_completed_onboarding") }
     }
 
     var bootstrapHost: String {

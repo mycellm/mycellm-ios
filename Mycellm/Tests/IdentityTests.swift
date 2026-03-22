@@ -1,5 +1,5 @@
 import XCTest
-import Crypto
+import CryptoKit
 @testable import Mycellm
 
 final class IdentityTests: XCTestCase {
