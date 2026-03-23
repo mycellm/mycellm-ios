@@ -351,9 +351,18 @@ struct ChatView: View {
                     model: model,
                     messages: Array(chatMessages)
                 )
+                // Simulate streaming reveal (word by word, fast)
+                let words = result.content.components(separatedBy: " ")
+                for (i, word) in words.enumerated() {
+                    if Task.isCancelled { break }
+                    messages[responseIdx].content += (i > 0 ? " " : "") + word
+                    if i % 3 == 0 { // Update every 3 words for smooth appearance
+                        try? await Task.sleep(for: .milliseconds(15))
+                    }
+                }
+
                 let endTime = Date()
                 let elapsed = endTime.timeIntervalSince(messages[responseIdx].startTime)
-                messages[responseIdx].content = result.content
                 messages[responseIdx].tokenCount = result.completionTokens > 0
                     ? result.completionTokens
                     : result.content.split(separator: " ").count * 4 / 3
