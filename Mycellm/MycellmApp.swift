@@ -85,8 +85,8 @@ struct RootView: View {
             // Auto-load last model
             await n.modelManager.autoLoadLastModel()
 
-            // Auto-start the node
-            await n.start()
+            // Auto-start the node (don't await — bootstrap connection can take time)
+            Task { await n.start() }
 
             // Wait for boot text to finish
             try? await Task.sleep(for: .seconds(2.0))
