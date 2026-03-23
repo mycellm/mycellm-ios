@@ -80,6 +80,13 @@ final class Preferences: @unchecked Sendable {
         set { defaults.set(newValue, forKey: "remote_model") }
     }
 
+    // MARK: - Privacy Guard
+
+    var sensitiveGuardEnabled: Bool {
+        get { defaults.object(forKey: "sensitive_guard_enabled") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "sensitive_guard_enabled") }
+    }
+
     // MARK: - Display
 
     var keepAwake: Bool {

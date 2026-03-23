@@ -80,6 +80,33 @@ struct SettingsView: View {
                     }
                 }
 
+                // Privacy Guard
+                Section(header: Text("Privacy Guard"), footer: Text("Scans outgoing messages for sensitive data (API keys, passwords, PII) and routes to trusted/local nodes.").font(.mono(10))) {
+                    Toggle("Sensitive Data Detection", isOn: Binding(
+                        get: { preferences.sensitiveGuardEnabled },
+                        set: { preferences.sensitiveGuardEnabled = $0 }
+                    ))
+                    .font(.mono(13))
+
+                    if preferences.sensitiveGuardEnabled {
+                        LabeledContent("Rules") {
+                            Text("\(SensitiveDataGuard.builtinRules.count) built-in")
+                                .font(.mono(12))
+                                .foregroundStyle(Color.consoleDim)
+                        }
+                        LabeledContent("Public Network") {
+                            Text("Block + redirect")
+                                .font(.mono(12))
+                                .foregroundStyle(Color.sporeGreen)
+                        }
+                        LabeledContent("Private Network") {
+                            Text("Warn on high")
+                                .font(.mono(12))
+                                .foregroundStyle(Color.ledgerGold)
+                        }
+                    }
+                }
+
                 // Remote Endpoint (for Network chat)
                 Section(header: Text("Remote Endpoint"), footer: Text("OpenAI-compatible API for Network chat mode. Works with mycellm nodes, OpenRouter, ollama, etc.").font(.mono(10))) {
                     HStack {

@@ -24,6 +24,10 @@ struct ChatView: View {
     @State private var isGenerating = false
     @State private var streamTask: Task<Void, Never>?
     @State private var remoteClient = RemoteClient()
+    @State private var guard_ = SensitiveDataGuard()
+    @State private var scanResult = SensitiveDataGuard.ScanResult(matches: [], action: .allow, highestSeverity: nil)
+    @State private var showSensitiveAlert = false
+    @State private var scanTask: Task<Void, Never>?
 
     struct DisplayMessage: Identifiable {
         let id = UUID()
@@ -227,32 +231,93 @@ struct ChatView: View {
 
     // MARK: - Input Bar
 
+    private var guardBorderColor: Color {
+        switch scanResult.highestSeverity {
+        case .high: Color.computeRed
+        case .medium: Color.ledgerGold
+        default: Color.clear
+        }
+    }
+
     private var inputBar: some View {
-        HStack(alignment: .bottom, spacing: 12) {
-            TextField("Type a message…", text: $inputText, prompt: Text("Type a message…").foregroundStyle(Color.consoleDim.opacity(0.8)), axis: .vertical)
-                .font(.mono(14))
-                .foregroundStyle(Color.consoleText)
-                .lineLimit(1...5)
-                .textFieldStyle(.plain)
-                .submitLabel(.send)
-                .onSubmit { sendMessage() }
+        VStack(spacing: 0) {
+            // Sensitive data warning banner
+            if !scanResult.matches.isEmpty && route == .network {
+                HStack(spacing: 6) {
+                    Image(systemName: scanResult.highestSeverity == .high ? "exclamationmark.shield.fill" : "shield.fill")
+                        .font(.system(size: 11))
+                    Text(scanResult.highestSeverity == .high
+                        ? "Sensitive data detected — will route locally"
+                        : "\(scanResult.matches.count) potential PII detected")
+                        .font(.mono(10))
+                    Spacer()
+                    Button {
+                        showSensitiveAlert = true
+                    } label: {
+                        Text("Details")
+                            .font(.mono(9))
+                    }
+                }
+                .foregroundStyle(scanResult.highestSeverity == .high ? Color.computeRed : Color.ledgerGold)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 6)
+                .background((scanResult.highestSeverity == .high ? Color.computeRed : Color.ledgerGold).opacity(0.1))
+            }
+
+            HStack(alignment: .bottom, spacing: 12) {
+                TextField("Type a message…", text: $inputText, prompt: Text("Type a message…").foregroundStyle(Color.consoleDim.opacity(0.8)), axis: .vertical)
+                    .font(.mono(14))
+                    .foregroundStyle(Color.consoleText)
+                    .lineLimit(1...5)
+                    .textFieldStyle(.plain)
+                    .submitLabel(.send)
+                    .onSubmit { sendMessage() }
+                    .onChange(of: inputText) { _, newValue in
+                        // Debounced sensitive data scan
+                        scanTask?.cancel()
+                        scanTask = Task {
+                            try? await Task.sleep(for: .milliseconds(300))
+                            guard !Task.isCancelled else { return }
+                            let hasLocal = !node.modelManager.loadedModels.isEmpty
+                            scanResult = guard_.scan(newValue, trustLevel: route == .onDevice ? .honor : .strict, hasLocalModel: hasLocal)
+                        }
+                    }
 
             Button {
                 if isGenerating {
                     stopGenerating()
+                } else if scanResult.action == .blockAsk {
+                    showSensitiveAlert = true
                 } else {
                     sendMessage()
                 }
             } label: {
-                Image(systemName: isGenerating ? "stop.circle.fill" : "arrow.up.circle.fill")
+                Image(systemName: isGenerating ? "stop.circle.fill"
+                    : scanResult.highestSeverity == .high ? "shield.fill"
+                    : "arrow.up.circle.fill")
                     .font(.system(size: 28))
-                    .foregroundStyle(inputText.isEmpty && !isGenerating ? Color.consoleDim : routeColor)
+                    .foregroundStyle(inputText.isEmpty && !isGenerating ? Color.consoleDim
+                        : scanResult.highestSeverity == .high ? Color.computeRed
+                        : routeColor)
             }
             .disabled(inputText.isEmpty && !isGenerating)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .background(Color.cardBackground)
+            .overlay(alignment: .top) {
+                if scanResult.highestSeverity != nil {
+                    guardBorderColor.frame(height: 2)
+                }
+            }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
-        .background(Color.cardBackground)
+        .alert("Sensitive Data Detected", isPresented: $showSensitiveAlert) {
+            Button("Cancel", role: .cancel) {}
+            Button("Send Anyway", role: .destructive) { sendMessage() }
+        } message: {
+            let labels = scanResult.matches.map { "• \($0.rule.label): \($0.matchedText)" }.joined(separator: "\n")
+            Text("This message contains:\n\(labels)\n\nIt would be sent to untrusted nodes on the public network.")
+        }
     }
 
     // MARK: - Send
@@ -260,14 +325,24 @@ struct ChatView: View {
     private func sendMessage() {
         let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
+
+        // Check guard — auto-redirect to local if HIGH + model available
+        let effectiveRoute: ChatRoute
+        if scanResult.action == .blockRedirect && route == .network {
+            effectiveRoute = .onDevice
+        } else {
+            effectiveRoute = route
+        }
+
         inputText = ""
+        scanResult = SensitiveDataGuard.ScanResult(matches: [], action: .allow, highestSeverity: nil)
 
         messages.append(DisplayMessage(
             role: "user", content: text, tokenCount: 0,
             routedVia: "local", timestamp: Date()
         ))
 
-        switch route {
+        switch effectiveRoute {
         case .network:
             sendNetworkMessage()
         case .onDevice:
