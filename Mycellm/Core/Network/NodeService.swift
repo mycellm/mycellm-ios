@@ -27,6 +27,7 @@ final class NodeService: @unchecked Sendable {
     let bootstrapClient = BootstrapClient()
     private let peerManager = PeerManager()
     let creditLedger = CreditLedger()
+    let natDiscovery = NATDiscovery()
     let receiptValidator = ReceiptValidator()
 
     // MARK: - Network Status
@@ -106,6 +107,9 @@ final class NodeService: @unchecked Sendable {
         }
 
         modelManager.scanLocalModels()
+
+        // Start NAT discovery (background, non-blocking)
+        Task { await natDiscovery.start() }
 
         // Connect to bootstrap if network mode requires it
         if networkMode.usesBootstrap {
