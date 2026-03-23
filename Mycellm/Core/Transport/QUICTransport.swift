@@ -1,16 +1,16 @@
 import Foundation
 import Network
 
-/// QUIC transport using NWConnectionGroup for multiplexed bidirectional streams.
-/// Wire format: one raw CBOR message per stream, stream closed after write.
+/// QUIC transport using Network.framework.
+/// Wire format: raw CBOR per message (no length prefix), matching Python aioquic.
 actor QUICTransport {
     static let alpn = "mycellm-v1"
     static let defaultPort: UInt16 = 8421
 
-    private var group: NWConnectionGroup?
+    private var connection: NWConnection?
     private(set) var connected = false
     private var onMessage: ((MessageEnvelope) async -> MessageEnvelope?)?
-    private var pendingResponses: [String: CheckedContinuation<MessageEnvelope, Error>] = [:]
+    private var receiveBuffer = Data()
 
     func setMessageHandler(_ handler: @escaping (MessageEnvelope) async -> MessageEnvelope?) {
         onMessage = handler
@@ -26,22 +26,17 @@ actor QUICTransport {
             .main
         )
 
-        let descriptor = NWMultiplexGroup(to: .hostPort(
+        let params = NWParameters(quic: quicOptions)
+        let endpoint = NWEndpoint.hostPort(
             host: NWEndpoint.Host(host),
             port: NWEndpoint.Port(rawValue: port)!
-        ))
-        let params = NWParameters(quic: quicOptions)
-        let grp = NWConnectionGroup(with: descriptor, using: params)
-        group = grp
-
-        // Handle server-initiated streams
-        grp.newConnectionHandler = { [weak self] stream in
-            Task { await self?.handleIncomingStream(stream) }
-        }
+        )
+        let conn = NWConnection(to: endpoint, using: params)
+        connection = conn
 
         let resolver = ContinuationResolver<Void>()
 
-        grp.stateUpdateHandler = { state in
+        conn.stateUpdateHandler = { [weak self] state in
             switch state {
             case .ready:
                 resolver.resumeIfNeeded(returning: ())
@@ -53,124 +48,111 @@ actor QUICTransport {
                 break
             }
         }
-        grp.start(queue: .global(qos: .userInitiated))
+        conn.start(queue: .global(qos: .userInitiated))
 
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
             resolver.setContinuation(cont)
         }
 
         connected = true
+        // Start receiving
+        startReceiving()
     }
 
     func disconnect() {
-        group?.cancel()
-        group = nil
+        connection?.cancel()
+        connection = nil
         connected = false
-        // Cancel all pending responses
-        for (_, cont) in pendingResponses {
-            cont.resume(throwing: MycellmError.transportError("Disconnected"))
-        }
-        pendingResponses.removeAll()
+        receiveBuffer = Data()
     }
 
     // MARK: - Send
 
-    /// Send a message on a new outbound stream (raw CBOR, end stream).
+    /// Send a raw CBOR message. Uses the main QUIC connection.
+    /// The message is prefixed with a 4-byte length for framing (matches transport.quic framing).
     func send(_ message: MessageEnvelope) async throws {
-        guard let group else { throw MycellmError.transportError("Not connected") }
-        guard let stream = NWConnection(from: group) else {
-            throw MycellmError.transportError("Failed to create stream")
+        guard let conn = connection else {
+            throw MycellmError.transportError("Not connected")
         }
-        let data = message.toCBOR()
+
+        // Use the envelope's to_cbor (with 0x00/0x01 prefix) wrapped in 4-byte length frame
+        // This matches Python's MessageEnvelope.to_framed()
+        let framedData = message.toFramed()
 
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
-            let resolver = ContinuationResolver<Void>()
-            resolver.setContinuation(cont)
-
-            stream.stateUpdateHandler = { state in
-                if case .ready = state {
-                    stream.send(content: data, contentContext: .finalMessage, isComplete: true,
-                                completion: .contentProcessed { error in
-                        if let error {
-                            resolver.resumeIfNeeded(throwing: error)
-                        } else {
-                            resolver.resumeIfNeeded(returning: ())
-                        }
-                    })
-                } else if case .failed(let error) = state {
-                    resolver.resumeIfNeeded(throwing: error)
+            conn.send(content: framedData, completion: .contentProcessed { error in
+                if let error {
+                    cont.resume(throwing: error)
+                } else {
+                    cont.resume()
                 }
-            }
-            stream.start(queue: .global(qos: .userInitiated))
+            })
         }
-    }
-
-    /// Send and wait for response matched by message ID.
-    func sendAndWait(_ message: MessageEnvelope, timeout: TimeInterval = 30) async throws -> MessageEnvelope {
-        try await withThrowingTaskGroup(of: MessageEnvelope.self) { taskGroup in
-            taskGroup.addTask {
-                try await withCheckedThrowingContinuation { cont in
-                    Task { await self.registerPending(id: message.id, cont: cont) }
-                }
-            }
-            taskGroup.addTask {
-                try await Task.sleep(for: .seconds(timeout))
-                throw MycellmError.transportError("Timeout")
-            }
-
-            // Send after registering
-            try await send(message)
-
-            let result = try await taskGroup.next()!
-            taskGroup.cancelAll()
-            return result
-        }
-    }
-
-    private func registerPending(id: String, cont: CheckedContinuation<MessageEnvelope, Error>) {
-        pendingResponses[id] = cont
     }
 
     // MARK: - Receive
 
-    private func handleIncomingStream(_ stream: NWConnection) {
-        stream.stateUpdateHandler = { [weak self] state in
-            if case .ready = state {
-                Task { await self?.readStream(stream) }
-            }
-        }
-        stream.start(queue: .global(qos: .userInitiated))
+    private nonisolated func startReceiving() {
+        Task { await self.receiveLoop() }
     }
 
-    private nonisolated func readStreamData(_ stream: NWConnection) async -> Data {
-        var buffer = Data()
-        while true {
-            let result: (Data?, Bool) = await withCheckedContinuation { cont in
-                stream.receive(minimumIncompleteLength: 1, maximumLength: 65536) { data, _, isComplete, _ in
-                    cont.resume(returning: (data, isComplete))
+    private func receiveLoop() async {
+        guard let conn = connection else { return }
+
+        while connected {
+            do {
+                let data: Data = try await withCheckedThrowingContinuation { cont in
+                    conn.receive(minimumIncompleteLength: 1, maximumLength: 65536) { data, _, isComplete, error in
+                        if let error {
+                            cont.resume(throwing: error)
+                        } else if let data {
+                            cont.resume(returning: data)
+                        } else if isComplete {
+                            cont.resume(throwing: MycellmError.transportError("Connection closed"))
+                        } else {
+                            cont.resume(returning: Data())
+                        }
+                    }
                 }
+
+                if data.isEmpty { continue }
+                receiveBuffer.append(data)
+
+                // Try to parse framed messages from buffer
+                while true {
+                    do {
+                        let (msg, remaining) = try MessageEnvelope.readFrame(receiveBuffer)
+                        guard let msg else { break } // incomplete frame
+                        receiveBuffer = remaining
+
+                        if let handler = onMessage {
+                            Task {
+                                if let response = await handler(msg) {
+                                    try? await self.send(response)
+                                }
+                            }
+                        }
+                    } catch {
+                        // Try parsing as raw CBOR (no length prefix)
+                        if let msg = try? MessageEnvelope.fromCBOR(receiveBuffer) {
+                            receiveBuffer = Data()
+                            if let handler = onMessage {
+                                Task {
+                                    if let response = await handler(msg) {
+                                        try? await self.send(response)
+                                    }
+                                }
+                            }
+                        }
+                        break
+                    }
+                }
+            } catch {
+                if connected {
+                    connected = false
+                }
+                break
             }
-            if let data = result.0 { buffer.append(data) }
-            if result.1 || buffer.count > 10 * 1024 * 1024 { break }
-        }
-        return buffer
-    }
-
-    private func readStream(_ stream: NWConnection) async {
-        let buffer = await readStreamData(stream)
-        guard !buffer.isEmpty else { return }
-
-        guard let envelope = try? MessageEnvelope.fromCBOR(buffer) else { return }
-
-        // Check pending responses first
-        if let cont = pendingResponses.removeValue(forKey: envelope.id) {
-            cont.resume(returning: envelope)
-            return
-        }
-
-        // Dispatch to handler
-        if let handler = onMessage, let response = await handler(envelope) {
-            try? await send(response)
         }
     }
 
