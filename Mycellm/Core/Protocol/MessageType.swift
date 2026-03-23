@@ -34,6 +34,16 @@ enum MessageType: String, Sendable, CaseIterable {
     case fleetCommand = "fleet_command"
     case fleetResponse = "fleet_response"
 
+    // NAT traversal (hole punching)
+    case punchRequest = "punch_request"
+    case punchInitiate = "punch_initiate"
+    case punchResponse = "punch_response"
+    case punchResult = "punch_result"
+
+    // DHT gateway
+    case dhtQuery = "dht_query"
+    case dhtResponse = "dht_response"
+
     // Error
     case error = "error"
 }
