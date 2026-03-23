@@ -382,11 +382,36 @@ struct ChatView: View {
             } catch is CancellationError {
                 messages[responseIdx].endTime = Date()
                 messages[responseIdx].isStreaming = false
-            } catch is CancellationError {
-                messages[responseIdx].endTime = Date()
-                messages[responseIdx].isStreaming = false
             } catch {
+                // Auto-retry once on 503 (fleet node busy/intermittent)
+                if error.localizedDescription.contains("503") {
+                    try? await Task.sleep(for: .seconds(1))
+                    if let retry = try? await remoteClient.completeWithMetadata(
+                        model: model, messages: Array(chatMessages)
+                    ) {
+                        let words = retry.content.components(separatedBy: " ")
+                        messages[responseIdx].content = ""
+                        for (i, word) in words.enumerated() {
+                            messages[responseIdx].content += (i > 0 ? " " : "") + word
+                            if i % 3 == 0 { try? await Task.sleep(for: .milliseconds(15)) }
+                        }
+                        messages[responseIdx].tokenCount = retry.completionTokens > 0
+                            ? retry.completionTokens : words.count * 4 / 3
+                        messages[responseIdx].sourceNode = retry.sourceNode
+                        messages[responseIdx].endTime = Date()
+                        let elapsed = Date().timeIntervalSince(messages[responseIdx].startTime)
+                        messages[responseIdx].tokensPerSecond = elapsed > 0
+                            ? Double(messages[responseIdx].tokenCount) / elapsed : 0
+                        messages[responseIdx].isStreaming = false
+                        isGenerating = false
+                        return
+                    }
+                }
+
                 let errMsg = error.localizedDescription
+                    .replacingOccurrences(of: "Transport error: HTTP 503: ", with: "")
+                    .replacingOccurrences(of: "{\"error\":{\"message\":\"", with: "")
+                    .replacingOccurrences(of: "\"}}", with: "")
                 messages[responseIdx].isStreaming = false
                 messages[responseIdx].endTime = Date()
 
