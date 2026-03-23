@@ -143,6 +143,7 @@ actor RemoteClient {
 
     struct CompletionResult: Sendable {
         let content: String
+        let model: String
         let promptTokens: Int
         let completionTokens: Int
         let sourceNode: String
@@ -188,6 +189,7 @@ actor RemoteClient {
 
         return CompletionResult(
             content: content,
+            model: json["model"] as? String ?? "",
             promptTokens: usage?["prompt_tokens"] as? Int ?? 0,
             completionTokens: usage?["completion_tokens"] as? Int ?? 0,
             sourceNode: mycellm?["node"] as? String ?? "",

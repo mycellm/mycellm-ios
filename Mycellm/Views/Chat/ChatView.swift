@@ -32,6 +32,7 @@ struct ChatView: View {
         var tokenCount: Int
         var routedVia: String
         var sourceNode: String = ""  // hashed node ID for attribution
+        var modelUsed: String = ""   // model that served the response
         let timestamp: Date
         var isStreaming: Bool = false
         var isError: Bool = false
@@ -351,14 +352,25 @@ struct ChatView: View {
                     model: model,
                     messages: Array(chatMessages)
                 )
-                // Simulate streaming reveal (word by word, fast)
-                let words = result.content.components(separatedBy: " ")
-                for (i, word) in words.enumerated() {
-                    if Task.isCancelled { break }
-                    messages[responseIdx].content += (i > 0 ? " " : "") + word
-                    if i % 3 == 0 { // Update every 3 words for smooth appearance
-                        try? await Task.sleep(for: .milliseconds(15))
+                // Reveal response (batch for performance — avoids freeze on long responses)
+                let content = result.content
+                if content.count < 500 {
+                    // Short response — show immediately
+                    messages[responseIdx].content = content
+                } else {
+                    // Long response — reveal in chunks
+                    let chunkSize = max(content.count / 20, 50)
+                    var idx = content.startIndex
+                    while idx < content.endIndex {
+                        if Task.isCancelled { break }
+                        let end = content.index(idx, offsetBy: chunkSize, limitedBy: content.endIndex) ?? content.endIndex
+                        messages[responseIdx].content = String(content[content.startIndex...end])
+                        idx = content.index(after: end == content.endIndex ? content.index(before: end) : end)
+                        if end < content.endIndex {
+                            try? await Task.sleep(for: .milliseconds(20))
+                        }
                     }
+                    messages[responseIdx].content = content
                 }
 
                 let endTime = Date()
@@ -367,6 +379,7 @@ struct ChatView: View {
                     ? result.completionTokens
                     : result.content.split(separator: " ").count * 4 / 3
                 messages[responseIdx].sourceNode = result.sourceNode
+                messages[responseIdx].modelUsed = result.model.isEmpty ? model : result.model
                 messages[responseIdx].endTime = endTime
                 messages[responseIdx].tokensPerSecond = elapsed > 0
                     ? Double(messages[responseIdx].tokenCount) / elapsed : 0
@@ -558,11 +571,16 @@ struct MessageBubble: View {
                                 .foregroundStyle(Color.consoleDim)
                         }
 
-                        // Source node attribution
+                        // Model + source node attribution
+                        if !message.modelUsed.isEmpty {
+                            Text(message.modelUsed)
+                                .font(.mono(9))
+                                .foregroundStyle(Color.consoleDim)
+                        }
                         if !message.sourceNode.isEmpty {
                             Text("node:\(message.sourceNode)")
-                                .font(.mono(8))
-                                .foregroundStyle(Color.consoleDim.opacity(0.7))
+                                .font(.mono(9))
+                                .foregroundStyle(Color.relayBlue)
                         }
                     }
                 }
