@@ -144,7 +144,7 @@ final class NodeService: @unchecked Sendable {
                     ModelCapability(name: m.name, backend: "llama.cpp", scope: m.scope)
                 },
                 hardware: HardwareInfo.capabilitiesHardware(),
-                role: "seeder",
+                role: modelManager.loadedModels.isEmpty ? "consumer" : "seeder",
                 version: "0.1.0"
             )
 
@@ -217,12 +217,12 @@ final class NodeService: @unchecked Sendable {
 
 
     /// Record an inference served via HTTP (LAN relay).
-    func recordHTTPInference(model: String, tokens: Int) {
+    func recordHTTPInference(model: String, tokens: Int, clientIP: String = "LAN") {
         totalInferences += 1
         let cost = Double(tokens) * 0.001
         creditBalance += cost
         addEvent(.inferenceCompleted(model: model, tokens: tokens))
-        addEvent(.creditEarned(cost, "HTTP client"))
+        addEvent(.creditEarned(cost, clientIP))
     }
 
     /// Periodically submit receipts to bootstrap for auditing.

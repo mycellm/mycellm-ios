@@ -36,6 +36,7 @@ struct RootView: View {
                         MainTabView()
                             .environment(node)
                             .modelContainer(container)
+                            .scrollDismissesKeyboard(.interactively)
 
                         if showScreenSaver {
                             ScreenSaverView {

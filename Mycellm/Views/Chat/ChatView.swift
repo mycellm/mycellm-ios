@@ -31,6 +31,7 @@ struct ChatView: View {
         var content: String
         var tokenCount: Int
         var routedVia: String
+        var sourceNode: String = ""  // hashed node ID for attribution
         let timestamp: Date
         var isStreaming: Bool = false
         var isError: Bool = false
@@ -70,6 +71,9 @@ struct ChatView: View {
                         }
                         .padding()
                     }
+                    .onTapGesture {
+                        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+                    }
                     .onChange(of: messages.count) { _, _ in
                         scrollToBottom(proxy)
                     }
@@ -97,55 +101,60 @@ struct ChatView: View {
         }
     }
 
+    @Environment(\.horizontalSizeClass) private var sizeClass
+
     // MARK: - Route Bar
 
     private var routeBar: some View {
-        HStack(spacing: 12) {
-            // Route toggle
-            HStack(spacing: 0) {
-                ForEach(ChatRoute.allCases) { r in
-                    Button {
-                        withAnimation(.easeInOut(duration: 0.2)) { route = r }
-                    } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: r.icon)
-                                .font(.system(size: 10))
-                            Text(r.rawValue)
-                                .font(.mono(11, weight: .medium))
-                        }
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background(route == r ? routeColor.opacity(0.2) : Color.clear)
-                        .foregroundStyle(route == r ? routeColor : Color.consoleDim)
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .background(Color.cardBackground)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.cardBorder, lineWidth: 1))
-
-            // Center lockup
-            Spacer()
+        VStack(spacing: 6) {
+            // Lockup centered
             Image("MycellmLockup")
                 .resizable()
                 .scaledToFit()
-                .frame(height: 20)
-            Spacer()
+                .frame(height: 18)
 
-            // Status indicator
-            HStack(spacing: 4) {
-                Circle()
-                    .fill(statusColor)
-                    .frame(width: 6, height: 6)
-                Text(statusText)
-                    .font(.mono(10))
-                    .foregroundStyle(Color.consoleDim)
-                    .lineLimit(1)
+            // Controls row
+            HStack(spacing: 8) {
+                // Route toggle
+                HStack(spacing: 0) {
+                    ForEach(ChatRoute.allCases) { r in
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.2)) { route = r }
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: r.icon)
+                                    .font(.system(size: 10))
+                                Text(r.rawValue)
+                                    .font(.mono(11, weight: .medium))
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background(route == r ? routeColor.opacity(0.2) : Color.clear)
+                            .foregroundStyle(route == r ? routeColor : Color.consoleDim)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .background(Color.cardBackground)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.cardBorder, lineWidth: 1))
+
+                Spacer()
+
+                // Status
+                HStack(spacing: 4) {
+                    Circle()
+                        .fill(statusColor)
+                        .frame(width: 6, height: 6)
+                    Text(statusText)
+                        .font(.mono(10))
+                        .foregroundStyle(Color.consoleDim)
+                        .lineLimit(1)
+                }
             }
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 8)
+        .padding(.vertical, 6)
         .background(Color.cardBackground)
     }
 
@@ -183,7 +192,7 @@ struct ChatView: View {
 
     private var inputBar: some View {
         HStack(alignment: .bottom, spacing: 12) {
-            TextField("Message…", text: $inputText, axis: .vertical)
+            TextField("Type a message…", text: $inputText, prompt: Text("Type a message…").foregroundStyle(Color.consoleDim.opacity(0.8)), axis: .vertical)
                 .font(.mono(14))
                 .foregroundStyle(Color.consoleText)
                 .lineLimit(1...5)
