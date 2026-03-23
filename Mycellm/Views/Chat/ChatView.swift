@@ -108,28 +108,28 @@ struct ChatView: View {
     // MARK: - Route Bar
 
     private var routeBar: some View {
-        VStack(spacing: 4) {
+        VStack(spacing: 8) {
             // Lockup centered
             Image("MycellmLockup")
                 .resizable()
                 .scaledToFit()
-                .frame(height: 16)
+                .frame(height: 24)
 
             // Controls row
             HStack(spacing: 6) {
-                // Route toggle — compact
+                // Route toggle
                 ForEach(ChatRoute.allCases) { r in
                     Button {
                         withAnimation(.easeInOut(duration: 0.2)) { route = r }
                     } label: {
-                        HStack(spacing: 3) {
+                        HStack(spacing: 4) {
                             Image(systemName: r.icon)
-                                .font(.system(size: 9))
+                                .font(.system(size: 11))
                             Text(r.rawValue)
-                                .font(.mono(10, weight: .medium))
+                                .font(.mono(12, weight: .medium))
                         }
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
                         .background(route == r ? routeColor.opacity(0.2) : Color.cardBackground)
                         .foregroundStyle(route == r ? routeColor : Color.consoleDim)
                         .clipShape(RoundedRectangle(cornerRadius: 6))
