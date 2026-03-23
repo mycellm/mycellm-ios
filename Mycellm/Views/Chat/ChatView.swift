@@ -362,6 +362,14 @@ struct ChatView: View {
                 messages[responseIdx].tokensPerSecond = elapsed > 0
                     ? Double(messages[responseIdx].tokenCount) / elapsed : 0
                 messages[responseIdx].isStreaming = false
+
+                // Debit local credit balance for network usage
+                let totalTokens = result.promptTokens + result.completionTokens
+                let cost = Double(max(totalTokens, messages[responseIdx].tokenCount)) * 0.001
+                await MainActor.run {
+                    node.creditBalance -= cost
+                    node.totalInferences += 1
+                }
             } catch is CancellationError {
                 messages[responseIdx].endTime = Date()
                 messages[responseIdx].isStreaming = false

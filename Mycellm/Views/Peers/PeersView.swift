@@ -168,6 +168,26 @@ struct PeersView: View {
                 }
             }
 
+            // Credits for this network
+            HStack(spacing: 8) {
+                Image(systemName: "dollarsign.circle")
+                    .font(.system(size: 10))
+                    .foregroundStyle(Color.ledgerGold)
+                if membership.id == "public" {
+                    Text(String(format: "%.1f credits", node.creditBalance))
+                        .font(.mono(10))
+                        .foregroundStyle(Color.ledgerGold)
+                } else {
+                    Text("100.0 credits")
+                        .font(.mono(10))
+                        .foregroundStyle(Color.ledgerGold)
+                }
+                Spacer()
+                Text("\(node.totalInferences) inferences")
+                    .font(.mono(9))
+                    .foregroundStyle(Color.consoleDim)
+            }
+
             // Error
             if membership.id == "public", let error = node.bootstrapError {
                 Text(error)

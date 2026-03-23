@@ -35,13 +35,12 @@ final class NodeService: @unchecked Sendable {
     private(set) var bootstrapError: String?
 
     // MARK: - Stats
-    private(set) var totalInferences: Int = 0
+    var totalInferences: Int = 0
     var connectedPeers: Int {
-        // Count peers from bootstrap connection status
         bootstrapState == .connected ? 1 : 0
     }
     var loadedModels: Int { modelManager.loadedModels.count }
-    private(set) var creditBalance: Double = 0.0
+    var creditBalance: Double = 0.0
 
     // MARK: - Activity
     private(set) var recentEvents: [ActivityItem] = []
