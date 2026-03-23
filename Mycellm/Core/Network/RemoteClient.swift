@@ -20,9 +20,14 @@ actor RemoteClient {
     }
 
     func configure(endpoint: String, apiKey: String = "") {
-        self.endpoint = URL(string: endpoint.hasSuffix("/")
-            ? endpoint + "v1/chat/completions"
-            : endpoint + "/v1/chat/completions")
+        // If endpoint already contains a path (e.g. /v1/public), append /chat/completions
+        // Otherwise append the full /v1/chat/completions
+        let base = endpoint.hasSuffix("/") ? String(endpoint.dropLast()) : endpoint
+        if base.contains("/v1/") {
+            self.endpoint = URL(string: base + "/chat/completions")
+        } else {
+            self.endpoint = URL(string: base + "/v1/chat/completions")
+        }
         self.apiKey = apiKey
     }
 

@@ -85,6 +85,7 @@ struct DashboardView: View {
                     // Activity feed
                     activityFeed
                 }
+                .frame(maxWidth: .infinity)
                 .padding(.vertical)
             }
             .background(Color.voidBlack)
@@ -181,40 +182,67 @@ struct DashboardView: View {
     }
 
     private var activityFeed: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 4) {
             Text("Activity")
                 .font(.mono(13, weight: .semibold))
                 .foregroundStyle(Color.consoleDim)
-                .padding(.horizontal)
+                .padding(.bottom, 4)
 
             if node.recentEvents.isEmpty {
-                Text("No recent activity")
-                    .font(.mono(12))
-                    .foregroundStyle(Color.consoleDim)
-                    .frame(maxWidth: .infinity, alignment: .center)
-                    .padding(.vertical, 20)
+                HStack {
+                    Spacer()
+                    VStack(spacing: 6) {
+                        Image(systemName: "sparkle")
+                            .font(.system(size: 20))
+                            .foregroundStyle(Color.consoleDim.opacity(0.5))
+                        Text("No recent activity")
+                            .font(.mono(11))
+                            .foregroundStyle(Color.consoleDim)
+                    }
+                    .padding(.vertical, 24)
+                    Spacer()
+                }
             } else {
                 ForEach(node.recentEvents.prefix(20)) { event in
-                    HStack(spacing: 10) {
+                    HStack(alignment: .top, spacing: 10) {
                         Image(systemName: event.icon)
-                            .font(.system(size: 12))
-                            .foregroundStyle(Color.consoleDim)
-                            .frame(width: 20)
+                            .font(.system(size: 10))
+                            .foregroundStyle(eventColor(event))
+                            .frame(width: 14, height: 14)
 
                         Text(event.description)
-                            .font(.mono(12))
+                            .font(.mono(11))
                             .foregroundStyle(Color.consoleText)
 
                         Spacer()
 
-                        Text(event.timestamp, style: .relative)
-                            .font(.mono(10))
-                            .foregroundStyle(Color.consoleDim)
+                        Text(event.relativeTime)
+                            .font(.mono(9))
+                            .foregroundStyle(Color.consoleDim.opacity(0.6))
+                            .layoutPriority(1)
                     }
-                    .padding(.horizontal)
-                    .padding(.vertical, 4)
+                    .padding(.vertical, 6)
+                    .padding(.horizontal, 10)
+                    .background(Color.cardBackground.opacity(0.5))
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
                 }
             }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal)
+    }
+
+    private func eventColor(_ event: ActivityItem) -> Color {
+        switch event.kind {
+        case .nodeStarted: .sporeGreen
+        case .nodeStopped: .computeRed
+        case .networkModeChanged: .relayBlue
+        case .modelLoaded: .sporeGreen
+        case .modelUnloaded: .ledgerGold
+        case .inferenceCompleted: .computeRed
+        case .peerConnected: .sporeGreen
+        case .peerDisconnected: .consoleDim
+        case .error: .computeRed
         }
     }
 }

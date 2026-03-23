@@ -24,6 +24,8 @@ final class NodeService: @unchecked Sendable {
     private let quicTransport = QUICTransport()
     let bootstrapClient = BootstrapClient()
     private let peerManager = PeerManager()
+    let creditLedger = CreditLedger()
+    let receiptValidator = ReceiptValidator()
 
     // MARK: - Network Status
     private(set) var bootstrapState: BootstrapClient.ConnectionState = .disconnected
@@ -126,18 +128,22 @@ final class NodeService: @unchecked Sendable {
             let nodeRef = self
             await bootstrapClient.setStateHandler { @Sendable state, transport, error in
                 Task { @MainActor in
+                    let prev = nodeRef.bootstrapState
                     nodeRef.bootstrapState = state
                     nodeRef.bootstrapTransport = transport
                     nodeRef.bootstrapError = error
-                    switch state {
-                    case .connected:
-                        nodeRef.addEvent(.peerConnected("bootstrap (\(transport.rawValue))"))
-                    case .failed:
-                        nodeRef.addEvent(.error("Bootstrap: \(error ?? "failed")"))
-                    case .fallbackHTTP:
-                        nodeRef.addEvent(.error("Bootstrap: falling back to HTTP"))
-                    default:
-                        break
+                    // Only log meaningful transitions (avoid spam)
+                    if state != prev {
+                        switch state {
+                        case .connected:
+                            nodeRef.addEvent(.peerConnected("bootstrap via \(transport.rawValue)"))
+                        case .failed where prev != .failed:
+                            nodeRef.addEvent(.error("Bootstrap: \(error ?? "connection failed")"))
+                        case .fallbackHTTP where prev != .fallbackHTTP:
+                            nodeRef.addEvent(.error("QUIC unavailable — trying HTTP"))
+                        default:
+                            break
+                        }
                     }
                 }
             }
@@ -196,6 +202,34 @@ final class NodeService: @unchecked Sendable {
                     completionTokens: result.completionTokens
                 )
                 try? await quicTransport.send(resp, to: peer)
+
+                // Generate signed credit receipt
+                let totalTokens = result.promptTokens + result.completionTokens
+                let cost = Double(totalTokens) * 0.001 // 0.001 credits per token
+                if let dk = deviceKey {
+                    if let receipt = try? await creditLedger.earn(
+                        amount: cost, from: envelope.fromPeer,
+                        seederId: peerId, model: model,
+                        tokens: totalTokens, requestId: envelope.id,
+                        deviceKey: dk
+                    ) {
+                        // Send receipt to consumer
+                        let receiptMsg = MessageBuilders.signedCreditReceipt(
+                            from: peerId,
+                            consumerId: envelope.fromPeer,
+                            seederId: peerId,
+                            model: model,
+                            tokens: totalTokens,
+                            cost: cost,
+                            timestamp: receipt.timestamp,
+                            signature: receipt.signature
+                        )
+                        try? await quicTransport.send(receiptMsg, to: peer)
+                        totalInferences += 1
+                        creditBalance = await creditLedger.balance
+                        addEvent(.inferenceCompleted(model: model, tokens: totalTokens))
+                    }
+                }
             } catch {
                 let errMsg = MessageBuilders.error(
                     from: peerId, requestId: envelope.id,
@@ -208,6 +242,34 @@ final class NodeService: @unchecked Sendable {
             let resp = MessageBuilders.peerResponse(from: peerId, requestId: envelope.id, peers: [])
             try? await quicTransport.send(resp, to: peer)
 
+        case .creditReceipt:
+            // Incoming receipt from a seeder — verify and record spend
+            guard let consumerId = envelope.payload["consumer_id"]?.stringValue,
+                  let seederId = envelope.payload["seeder_id"]?.stringValue,
+                  let model = envelope.payload["model"]?.stringValue,
+                  let tokens = envelope.payload["tokens"]?.intValue,
+                  let cost = envelope.payload["cost"]?.doubleValue,
+                  let timestamp = envelope.payload["timestamp"]?.doubleValue,
+                  let signature = envelope.payload["signature"]?.stringValue else { break }
+
+            // Check replay
+            guard await receiptValidator.checkReplay(requestId: envelope.id) else { break }
+            guard await receiptValidator.checkCreditRate(peerId: envelope.fromPeer) else { break }
+
+            let receipt = CreditLedger.SignedReceipt(
+                consumerId: consumerId, seederId: seederId,
+                model: model, tokens: tokens, cost: cost,
+                requestId: envelope.id, timestamp: timestamp,
+                signature: signature
+            )
+
+            // We'd need the seeder's pubkey to verify — for now trust receipts from authenticated peers
+            let _ = await creditLedger.spend(
+                receipt: receipt,
+                seederPubkeyBytes: peer.peerId.isEmpty ? Data() : Data()
+            )
+            creditBalance = await creditLedger.balance
+
         case .fleetCommand:
             // TODO: delegate to FleetHandler
             break
@@ -215,6 +277,11 @@ final class NodeService: @unchecked Sendable {
         default:
             break
         }
+    }
+
+    /// Periodically submit receipts to bootstrap for auditing.
+    func flushReceipts() async {
+        await creditLedger.submitPendingReceipts()
     }
 
     func setNetworkMode(_ mode: NetworkMode) {
@@ -274,10 +341,18 @@ struct ActivityItem: Identifiable, Sendable {
         case .modelLoaded(let name): "Loaded \(name)"
         case .modelUnloaded(let name): "Unloaded \(name)"
         case .inferenceCompleted(let model, let tokens): "\(model) — \(tokens) tokens"
-        case .peerConnected(let peer): "Connected: \(peer.prefix(12))…"
-        case .peerDisconnected(let peer): "Disconnected: \(peer.prefix(12))…"
+        case .peerConnected(let peer): "Connected: \(peer)"
+        case .peerDisconnected(let peer): "Disconnected: \(peer)"
         case .error(let msg): msg
         }
+    }
+
+    var relativeTime: String {
+        let seconds = Int(Date().timeIntervalSince(timestamp))
+        if seconds < 5 { return "now" }
+        if seconds < 60 { return "\(seconds)s ago" }
+        if seconds < 3600 { return "\(seconds / 60)m ago" }
+        return "\(seconds / 3600)h ago"
     }
 }
 

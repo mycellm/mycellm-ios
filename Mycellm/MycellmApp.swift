@@ -46,6 +46,8 @@ struct RootView: View {
                     }
                     .onReceive(Timer.publish(every: 30, on: .main, in: .common).autoconnect()) { _ in
                         checkIdle(node: node)
+                        // Submit pending receipts to bootstrap
+                        Task { await node.flushReceipts() }
                     }
                     .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
                         applyKeepAwake(node: node)

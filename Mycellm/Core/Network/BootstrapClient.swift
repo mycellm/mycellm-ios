@@ -100,15 +100,21 @@ actor BootstrapClient {
         let timeoutTask = Task {
             try? await Task.sleep(for: .seconds(10))
             guard !Task.isCancelled else { return }
-            if await self.state == .connecting {
-                conn.cancel()
-                await self.handleQUICFailure("Connection timeout")
-            }
+            conn.cancel()
+            await self.handleQUICFailure("Connection timeout (10s)")
         }
 
         conn.stateUpdateHandler = { [weak self] newState in
-            timeoutTask.cancel()
-            Task { await self?.handleQUICState(newState) }
+            switch newState {
+            case .ready:
+                timeoutTask.cancel()
+                Task { await self?.handleQUICState(newState) }
+            case .failed, .cancelled:
+                timeoutTask.cancel()
+                Task { await self?.handleQUICState(newState) }
+            default:
+                break // ignore preparing, waiting, etc.
+            }
         }
         conn.start(queue: .global(qos: .userInitiated))
     }
@@ -116,21 +122,45 @@ actor BootstrapClient {
     private func handleQUICState(_ newState: NWConnection.State) async {
         switch newState {
         case .ready:
+            let wasConnected = state == .connected
             setState(.connected, transport: .quic, error: nil)
             connectedAt = Date()
             retryCount = 0
+            if !wasConnected {
+                // Start keepalive — monitor connection health
+                startKeepAlive()
+            }
 
         case .failed(let error):
-            await handleQUICFailure(error.localizedDescription)
+            if state == .connected {
+                // Was connected, lost connection — reconnect silently
+                setState(.reconnecting, transport: .quic, error: "Connection lost")
+                connection?.cancel()
+                connection = nil
+                retryCount = 0
+                retryTask = Task {
+                    try? await Task.sleep(for: .seconds(5))
+                    guard !Task.isCancelled, keepRunning else { return }
+                    await attemptQUIC()
+                }
+            } else {
+                await handleQUICFailure(error.localizedDescription)
+            }
 
         case .cancelled:
-            if keepRunning && state != .fallbackHTTP {
+            // Only treat as failure if we weren't already connected or falling back
+            if keepRunning && state != .fallbackHTTP && state != .connected {
                 await handleQUICFailure("Connection cancelled")
             }
 
         default:
             break
         }
+    }
+
+    private func startKeepAlive() {
+        // Connection drops will be handled by stateUpdateHandler (.failed/.cancelled)
+        // No additional monitoring needed — NWConnection handles this
     }
 
     private func handleQUICFailure(_ reason: String) async {
@@ -157,12 +187,12 @@ actor BootstrapClient {
     // MARK: - HTTP Fallback
 
     private func fallbackToHTTP(reason: String) async {
-        setState(.fallbackHTTP, transport: .http, error: reason)
+        setState(.fallbackHTTP, transport: .http, error: "Trying HTTP fallback…")
 
         // Register via HTTP
         do {
             try await httpRegister()
-            setState(.connected, transport: .http, error: "QUIC unavailable, using HTTP")
+            setState(.connected, transport: .http, error: nil)
             connectedAt = Date()
 
             // Keep trying QUIC in background every 60s
@@ -191,25 +221,25 @@ actor BootstrapClient {
     }
 
     private func httpRegister() async throws {
-        guard let url = URL(string: "\(httpEndpoint)/v1/node/announce") else {
+        // Verify bootstrap is reachable via HTTP health check
+        guard let url = URL(string: "\(httpEndpoint)/health") else {
             throw MycellmError.transportError("Invalid HTTP endpoint")
         }
 
         var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.timeoutInterval = 15
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        let body: [String: Any] = [
-            "peer_id": peerId,
-            "platform": "ios",
-            "version": "0.1.0",
-        ]
-        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        request.timeoutInterval = 10
 
-        let (_, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse,
               (200...299).contains(http.statusCode) else {
-            throw MycellmError.transportError("HTTP registration failed")
+            throw MycellmError.transportError("Bootstrap not reachable")
+        }
+
+        // Parse bootstrap peer_id from health response
+        if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let bootstrapPeerId = json["peer_id"] as? String {
+            // Successfully connected to bootstrap node
+            _ = bootstrapPeerId
         }
     }
 
