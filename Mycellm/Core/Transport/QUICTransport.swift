@@ -37,10 +37,13 @@ actor QUICTransport {
         let resolver = ContinuationResolver<Void>()
 
         conn.stateUpdateHandler = { [weak self] state in
+            print("[QUIC] Connection state: \(state)")
             switch state {
             case .ready:
+                print("[QUIC] Connected to \(host):\(port)")
                 resolver.resumeIfNeeded(returning: ())
             case .failed(let error):
+                print("[QUIC] Connection failed: \(error)")
                 resolver.resumeIfNeeded(throwing: MycellmError.transportError("QUIC: \(error)"))
             case .cancelled:
                 resolver.resumeIfNeeded(throwing: MycellmError.transportError("QUIC cancelled"))
@@ -75,15 +78,27 @@ actor QUICTransport {
             throw MycellmError.transportError("Not connected")
         }
 
-        // Use the envelope's to_cbor (with 0x00/0x01 prefix) wrapped in 4-byte length frame
-        // This matches Python's MessageEnvelope.to_framed()
-        let framedData = message.toFramed()
+        // Send raw CBOR (not framed) on a QUIC stream, then close the stream.
+        // This matches Python's send_message: new unidirectional stream, data, end_stream=True.
+        let cborData = message.toCBOR()  // raw CBOR with 0x00/0x01 prefix
+        print("[QUIC] Sending \(cborData.count) bytes (type: \(message.type.rawValue))")
+
+        // Create a new stream context — each message gets its own QUIC stream
+        let streamContext = NWConnection.ContentContext(
+            identifier: "mycellm-\(message.id)",
+            isFinal: true  // This closes the stream after sending (end_stream=true)
+        )
 
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
-            conn.send(content: framedData, completion: .contentProcessed { error in
+            conn.send(content: cborData,
+                      contentContext: streamContext,
+                      isComplete: true,
+                      completion: .contentProcessed { error in
                 if let error {
+                    print("[QUIC] Send error: \(error)")
                     cont.resume(throwing: error)
                 } else {
+                    print("[QUIC] Send success: \(cborData.count) bytes on stream \(streamContext.identifier)")
                     cont.resume()
                 }
             })

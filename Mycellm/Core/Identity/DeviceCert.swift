@@ -27,32 +27,31 @@ struct DeviceCert: Sendable {
     // MARK: - CBOR Serialization
 
     /// Encode the signable portion (everything except signature).
+    /// Key order MUST match Python cbor2.dumps() insertion order for signature compatibility.
     func toCBORPayload() -> Data {
-        let map: CBOR = .map([
-            .utf8String("account_pubkey"): .byteString(Array(accountPubkey)),
-            .utf8String("device_pubkey"): .byteString(Array(devicePubkey)),
-            .utf8String("device_name"): .utf8String(deviceName),
-            .utf8String("role"): .utf8String(role),
-            .utf8String("created_at"): .double(createdAt),
-            .utf8String("expires_at"): .double(expiresAt),
-            .utf8String("revoked"): .boolean(revoked),
-        ])
-        return Data(map.encode())
+        Data(encodeOrderedMap([
+            ("account_pubkey", CBOR.byteString(Array(accountPubkey))),
+            ("device_pubkey", CBOR.byteString(Array(devicePubkey))),
+            ("device_name", CBOR.utf8String(deviceName)),
+            ("role", CBOR.utf8String(role)),
+            ("created_at", CBOR.double(createdAt)),
+            ("expires_at", CBOR.double(expiresAt)),
+            ("revoked", CBOR.boolean(revoked)),
+        ]))
     }
 
     /// Encode the full certificate including signature.
     func toCBOR() -> Data {
-        let map: CBOR = .map([
-            .utf8String("account_pubkey"): .byteString(Array(accountPubkey)),
-            .utf8String("device_pubkey"): .byteString(Array(devicePubkey)),
-            .utf8String("device_name"): .utf8String(deviceName),
-            .utf8String("role"): .utf8String(role),
-            .utf8String("created_at"): .double(createdAt),
-            .utf8String("expires_at"): .double(expiresAt),
-            .utf8String("revoked"): .boolean(revoked),
-            .utf8String("signature"): .byteString(Array(signature)),
-        ])
-        return Data(map.encode())
+        Data(encodeOrderedMap([
+            ("account_pubkey", CBOR.byteString(Array(accountPubkey))),
+            ("device_pubkey", CBOR.byteString(Array(devicePubkey))),
+            ("device_name", CBOR.utf8String(deviceName)),
+            ("role", CBOR.utf8String(role)),
+            ("created_at", CBOR.double(createdAt)),
+            ("expires_at", CBOR.double(expiresAt)),
+            ("revoked", CBOR.boolean(revoked)),
+            ("signature", CBOR.byteString(Array(signature))),
+        ]))
     }
 
     /// Decode a certificate from CBOR bytes.

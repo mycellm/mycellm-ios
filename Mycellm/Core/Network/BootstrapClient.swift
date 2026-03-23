@@ -39,6 +39,8 @@ actor BootstrapClient {
     private var keepRunning = false
     private var peerId: String = ""
     private var capabilities: Capabilities = Capabilities()
+    private var deviceKey: DeviceKey?
+    private var deviceCert: DeviceCert?
     private var onStateChange: (@Sendable (ConnectionState, Transport, String?) -> Void)?
     private var onInferenceRequest: ((MessageEnvelope) async -> MessageEnvelope?)?
 
@@ -61,9 +63,11 @@ actor BootstrapClient {
 
     // MARK: - Connect
 
-    func connect(peerId: String, capabilities: Capabilities) async {
+    func connect(peerId: String, capabilities: Capabilities, deviceKey: DeviceKey?, deviceCert: DeviceCert?) async {
         self.peerId = peerId
         self.capabilities = capabilities
+        self.deviceKey = deviceKey
+        self.deviceCert = deviceCert
         keepRunning = true
         retryCount = 0
         await attemptQUIC()
@@ -111,24 +115,40 @@ actor BootstrapClient {
             return
         }
 
-        // Send NodeHello
+        // Send NodeHello — payload["hello"] must be CBOR-serialized NodeHello
         setState(.handshaking, transport: .quic, error: nil)
-        let hello = MessageEnvelope(
+
+        guard let dk = deviceKey, let cert = deviceCert else {
+            await handleQUICFailure("No identity for handshake")
+            return
+        }
+
+        var nodeHello = NodeHello(
+            peerId: peerId,
+            devicePubkey: dk.publicBytes,
+            cert: cert,
+            capabilities: capabilities
+        )
+        try? nodeHello.sign(with: dk)
+        let helloBytes = nodeHello.toCBOR()
+
+        let envelope = MessageEnvelope(
             type: .nodeHello,
-            payload: [
-                "peer_id": .string(peerId),
-                "capabilities": .map(capabilities.toDict()),
-                "platform": .string("ios"),
-                "version": .string("0.1.0"),
-            ],
+            payload: ["hello": .bytes(helloBytes)],
             fromPeer: peerId
         )
 
         do {
-            try await qt.send(hello)
+            try await qt.send(envelope)
+            // Wait briefly for data to flush over the wire
+            try? await Task.sleep(for: .milliseconds(500))
             setState(.connected, transport: .quic, error: nil)
             connectedAt = Date()
             retryCount = 0
+
+            // Wait for server response (hello_ack) to confirm registration
+            // Keep connection alive for incoming inference requests
+            print("[Bootstrap] NodeHello sent, waiting for server response...")
         } catch {
             await handleQUICFailure("Handshake failed: \(error.localizedDescription)")
         }

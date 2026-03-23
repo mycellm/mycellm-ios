@@ -151,7 +151,7 @@ final class NodeService: @unchecked Sendable {
             }
 
             addEvent(.networkModeChanged(networkMode))
-            await bootstrapClient.connect(peerId: peerId, capabilities: caps)
+            await bootstrapClient.connect(peerId: peerId, capabilities: caps, deviceKey: deviceKey, deviceCert: deviceCert)
         }
     }
 

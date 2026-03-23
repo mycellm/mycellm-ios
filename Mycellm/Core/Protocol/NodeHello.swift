@@ -36,12 +36,12 @@ struct NodeHello: Sendable {
     /// Data that gets signed by device key.
     /// Wire-compatible with Python: `cbor2.dumps({"nonce": ..., "timestamp": ..., "peer_id": ...})`
     func signableData() -> Data {
-        let map: CBOR = .map([
-            .utf8String("nonce"): .byteString(Array(nonce)),
-            .utf8String("timestamp"): .double(timestamp),
-            .utf8String("peer_id"): .utf8String(peerId),
-        ])
-        return Data(map.encode())
+        // Key order MUST match Python: nonce, timestamp, peer_id
+        Data(encodeOrderedMap([
+            ("nonce", .byteString(Array(nonce))),
+            ("timestamp", .double(timestamp)),
+            ("peer_id", .utf8String(peerId)),
+        ]))
     }
 
     /// Sign this hello with the device key.
@@ -52,18 +52,18 @@ struct NodeHello: Sendable {
     // MARK: - CBOR Serialization
 
     func toCBOR() -> Data {
-        let map: CBOR = .map([
-            .utf8String("peer_id"): .utf8String(peerId),
-            .utf8String("device_pubkey"): .byteString(Array(devicePubkey)),
-            .utf8String("cert"): .byteString(Array(cert.toCBOR())),
-            .utf8String("capabilities"): capabilities.toCBORValue(),
-            .utf8String("nonce"): .byteString(Array(nonce)),
-            .utf8String("timestamp"): .double(timestamp),
-            .utf8String("signature"): .byteString(Array(signature)),
-            .utf8String("observed_addr"): .utf8String(observedAddr),
-            .utf8String("network_ids"): .array(networkIds.map { .utf8String($0) }),
-        ])
-        return Data(map.encode())
+        // Key order matches Python NodeHello.to_cbor()
+        Data(encodeOrderedMap([
+            ("peer_id", .utf8String(peerId)),
+            ("device_pubkey", .byteString(Array(devicePubkey))),
+            ("cert", .byteString(Array(cert.toCBOR()))),
+            ("capabilities", capabilities.toCBORValue()),
+            ("nonce", .byteString(Array(nonce))),
+            ("timestamp", .double(timestamp)),
+            ("signature", .byteString(Array(signature))),
+            ("observed_addr", .utf8String(observedAddr)),
+            ("network_ids", .array(networkIds.map { .utf8String($0) })),
+        ]))
     }
 
     static func fromCBOR(_ data: Data) throws -> NodeHello {
