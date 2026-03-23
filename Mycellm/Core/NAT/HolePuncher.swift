@@ -42,12 +42,12 @@ actor HolePuncher {
                 let addr = (candidate.ip, candidate.port)
                 attempt.success = true
                 attempt.resultAddr = addr
-                print("[HolePunch] SUCCESS: \(targetPeerId.prefix(16)) via \(candidate.ip):\(candidate.port)")
+                Log.nat.info(" SUCCESS: \(targetPeerId.prefix(16)) via \(candidate.ip):\(candidate.port)")
                 return addr
             }
         }
 
-        print("[HolePunch] FAILED: \(targetPeerId.prefix(16)) — no candidates responded")
+        Log.nat.info(" FAILED: \(targetPeerId.prefix(16)) — no candidates responded")
         return nil
     }
 

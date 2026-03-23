@@ -55,7 +55,7 @@ actor NATDiscovery {
         guard !results.isEmpty else {
             info.natType = .unknown
             info.confidence = 0
-            print("[NAT] No STUN servers responded")
+            Log.nat.info(" No STUN servers responded")
             return
         }
 
@@ -79,7 +79,12 @@ actor NATDiscovery {
         }
 
         info.confidence = Double(results.count) / Double(Self.stunServers.count)
-        print("[NAT] \(info.natType.rawValue) \(info.publicIP):\(info.publicPort) (confidence: \(Int(info.confidence * 100))%, punch: \(info.natType.canHolePunch ? "yes" : "no"))")
+        let natType = info.natType.rawValue
+        let pubIP = info.publicIP
+        let pubPort = info.publicPort
+        let conf = Int(info.confidence * 100)
+        let punch = info.natType.canHolePunch
+        Log.nat.info("NAT: \(natType) \(pubIP):\(pubPort) (confidence: \(conf)%, punch: \(punch ? "yes" : "no"))")
     }
 
     private func getLocalIPAddress() -> String? {

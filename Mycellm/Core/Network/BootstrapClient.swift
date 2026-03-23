@@ -79,7 +79,7 @@ actor BootstrapClient {
         quicRetryTask?.cancel()
         retryTask = nil
         quicRetryTask = nil
-        Task { await await quicTransport?.disconnect() }
+        Task { await quicTransport?.disconnect() }
         quicTransport = nil
         setState(.disconnected, transport: .none, error: nil)
     }
@@ -148,7 +148,7 @@ actor BootstrapClient {
 
             // Wait for server response (hello_ack) to confirm registration
             // Keep connection alive for incoming inference requests
-            print("[Bootstrap] NodeHello sent, waiting for server response...")
+            Log.bootstrap.info(" NodeHello sent, waiting for server response...")
         } catch {
             await handleQUICFailure("Handshake failed: \(error.localizedDescription)")
         }
@@ -273,18 +273,18 @@ actor BootstrapClient {
     // MARK: - Incoming Message Dispatch
 
     private func handleIncoming(_ envelope: MessageEnvelope) async -> MessageEnvelope? {
-        print("[Bootstrap] Incoming: \(envelope.type.rawValue) id=\(envelope.id)")
+        Log.bootstrap.info(" Incoming: \(envelope.type.rawValue) id=\(envelope.id)")
         switch envelope.type {
         case .nodeHelloAck:
-            print("[Bootstrap] Received hello ack from server")
+            Log.bootstrap.info(" Received hello ack from server")
             return nil
         case .inferenceReq:
             return await onInferenceRequest?(envelope)
         case .ping:
-            print("[Bootstrap] Responding to ping")
+            Log.bootstrap.info(" Responding to ping")
             return MessageBuilders.pong(from: peerId, requestId: envelope.id)
         default:
-            print("[Bootstrap] Unhandled message type: \(envelope.type.rawValue)")
+            Log.bootstrap.info(" Unhandled message type: \(envelope.type.rawValue)")
             return nil
         }
     }

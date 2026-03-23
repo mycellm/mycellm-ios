@@ -38,19 +38,19 @@ actor QUICTransport {
 
         // Handle server-initiated streams (pings, inference requests)
         grp.newConnectionHandler = { [weak self] incomingStream in
-            print("[QUIC] New incoming stream")
+            Log.quic.info(" New incoming stream")
             Task { await self?.handleIncomingStream(incomingStream) }
         }
 
         let resolver = ContinuationResolver<Void>()
 
         grp.stateUpdateHandler = { state in
-            print("[QUIC] Group state: \(state)")
+            Log.quic.info("Group state: \(String(describing: state))")
             switch state {
             case .ready:
                 resolver.resumeIfNeeded(returning: ())
             case .failed(let error):
-                print("[QUIC] Group failed: \(error)")
+                Log.quic.info("Group failed: \(error.localizedDescription)")
                 resolver.resumeIfNeeded(throwing: MycellmError.transportError("QUIC: \(error)"))
             case .cancelled:
                 resolver.resumeIfNeeded(throwing: MycellmError.transportError("QUIC cancelled"))
@@ -65,7 +65,7 @@ actor QUICTransport {
         }
 
         connected = true
-        print("[QUIC] Connected to \(host):\(port)")
+        Log.quic.info(" Connected to \(host):\(port)")
     }
 
     func disconnect() {
@@ -85,7 +85,7 @@ actor QUICTransport {
         }
 
         let cborData = message.toCBOR()
-        print("[QUIC] Sending \(cborData.count) bytes (type: \(message.type.rawValue))")
+        Log.quic.info(" Sending \(cborData.count) bytes (type: \(message.type.rawValue))")
 
         // Create a new stream from the group
         guard let stream = NWConnection(from: group) else {
@@ -103,15 +103,15 @@ actor QUICTransport {
                             isComplete: true,
                             completion: .contentProcessed { error in
                     if let error {
-                        print("[QUIC] Send error: \(error)")
+                        Log.quic.info("Send error: \(error.localizedDescription)")
                         resolver.resumeIfNeeded(throwing: error)
                     } else {
-                        print("[QUIC] Send OK: \(cborData.count) bytes")
+                        Log.quic.info(" Send OK: \(cborData.count) bytes")
                         resolver.resumeIfNeeded(returning: ())
                     }
                 })
             case .failed(let error):
-                print("[QUIC] Stream failed: \(error)")
+                Log.quic.info("Stream failed: \(error.localizedDescription)")
                 resolver.resumeIfNeeded(throwing: error)
             default:
                 break
@@ -150,14 +150,14 @@ actor QUICTransport {
         }
 
         guard !buffer.isEmpty else { return }
-        print("[QUIC] Stream received \(buffer.count) bytes")
+        Log.quic.info(" Stream received \(buffer.count) bytes")
 
         // Parse CBOR
         guard let msg = try? MessageEnvelope.fromCBOR(buffer) else {
-            print("[QUIC] Failed to parse incoming message (\(buffer.count) bytes)")
+            Log.quic.info(" Failed to parse incoming message (\(buffer.count) bytes)")
             return
         }
-        print("[QUIC] Parsed: \(msg.type.rawValue) id=\(msg.id)")
+        Log.quic.info(" Parsed: \(msg.type.rawValue) id=\(msg.id)")
 
         if let handler = onMessage, let response = await handler(msg) {
             try? await send(response)

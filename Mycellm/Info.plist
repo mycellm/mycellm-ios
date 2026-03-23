@@ -9,6 +9,13 @@
 		<key>ImageName</key>
 		<string>MycellmLogo-red</string>
 	</dict>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>mycellm uses your local network to discover and connect to nearby nodes for P2P inference.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_mycellm._tcp</string>
+		<string>_mycellm._udp</string>
+	</array>
 	<key>UISupportedInterfaceOrientations</key>
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>
