@@ -103,59 +103,95 @@ struct ChatView: View {
 
     @Environment(\.horizontalSizeClass) private var sizeClass
 
+    @State private var showEndpointDetail = false
+
     // MARK: - Route Bar
 
     private var routeBar: some View {
-        VStack(spacing: 6) {
+        VStack(spacing: 4) {
             // Lockup centered
             Image("MycellmLockup")
                 .resizable()
                 .scaledToFit()
-                .frame(height: 18)
+                .frame(height: 16)
 
             // Controls row
-            HStack(spacing: 8) {
-                // Route toggle
-                HStack(spacing: 0) {
-                    ForEach(ChatRoute.allCases) { r in
-                        Button {
-                            withAnimation(.easeInOut(duration: 0.2)) { route = r }
-                        } label: {
-                            HStack(spacing: 4) {
-                                Image(systemName: r.icon)
-                                    .font(.system(size: 10))
-                                Text(r.rawValue)
-                                    .font(.mono(11, weight: .medium))
-                            }
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 5)
-                            .background(route == r ? routeColor.opacity(0.2) : Color.clear)
-                            .foregroundStyle(route == r ? routeColor : Color.consoleDim)
+            HStack(spacing: 6) {
+                // Route toggle — compact
+                ForEach(ChatRoute.allCases) { r in
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.2)) { route = r }
+                    } label: {
+                        HStack(spacing: 3) {
+                            Image(systemName: r.icon)
+                                .font(.system(size: 9))
+                            Text(r.rawValue)
+                                .font(.mono(10, weight: .medium))
                         }
-                        .buttonStyle(.plain)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(route == r ? routeColor.opacity(0.2) : Color.cardBackground)
+                        .foregroundStyle(route == r ? routeColor : Color.consoleDim)
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                        .overlay(RoundedRectangle(cornerRadius: 6)
+                            .stroke(route == r ? routeColor.opacity(0.3) : Color.cardBorder, lineWidth: 1))
                     }
+                    .buttonStyle(.plain)
                 }
-                .background(Color.cardBackground)
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.cardBorder, lineWidth: 1))
 
                 Spacer()
 
-                // Status
-                HStack(spacing: 4) {
-                    Circle()
-                        .fill(statusColor)
-                        .frame(width: 6, height: 6)
-                    Text(statusText)
-                        .font(.mono(10))
-                        .foregroundStyle(Color.consoleDim)
-                        .lineLimit(1)
+                // Status — compact dot + short label, tap for detail
+                Button {
+                    showEndpointDetail.toggle()
+                } label: {
+                    HStack(spacing: 3) {
+                        Circle()
+                            .fill(statusColor)
+                            .frame(width: 6, height: 6)
+                        Text(statusShort)
+                            .font(.mono(9))
+                            .foregroundStyle(Color.consoleDim)
+                            .lineLimit(1)
+                    }
+                }
+                .buttonStyle(.plain)
+                .popover(isPresented: $showEndpointDetail) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(route == .network ? "Network Endpoint" : "On-Device")
+                            .font(.mono(12, weight: .semibold))
+                            .foregroundStyle(Color.consoleText)
+                        Text(statusText)
+                            .font(.mono(11))
+                            .foregroundStyle(Color.consoleDim)
+                            .textSelection(.enabled)
+                    }
+                    .padding()
+                    .frame(minWidth: 250)
+                    .presentationCompactAdaptation(.popover)
                 }
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 6)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 4)
         .background(Color.cardBackground)
+    }
+
+    private var statusShort: String {
+        switch route {
+        case .network:
+            if Preferences.shared.remoteEndpoint.isEmpty { return "No endpoint" }
+            let model = Preferences.shared.remoteModel
+            if !model.isEmpty { return model }
+            return "Connected"
+        case .onDevice:
+            if let first = node.modelManager.loadedModels.first {
+                // Truncate long model names
+                let name = first.name
+                return name.count > 20 ? String(name.prefix(18)) + "…" : name
+            }
+            return "No model"
+        }
     }
 
     private var routeColor: Color {
