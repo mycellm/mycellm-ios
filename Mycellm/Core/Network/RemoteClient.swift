@@ -86,6 +86,7 @@ actor RemoteClient {
                               let content = delta["content"] as? String else {
                             continue
                         }
+
                         continuation.yield(content)
                     }
                     continuation.finish()
@@ -138,6 +139,60 @@ actor RemoteClient {
             throw MycellmError.transportError("Invalid response format")
         }
         return content
+    }
+
+    struct CompletionResult: Sendable {
+        let content: String
+        let promptTokens: Int
+        let completionTokens: Int
+        let sourceNode: String
+        let latencyMs: Int
+    }
+
+    /// Non-streaming completion with full metadata.
+    func completeWithMetadata(
+        model: String,
+        messages: [ChatMessage],
+        temperature: Double = 0.7,
+        maxTokens: Int = 2048
+    ) async throws -> CompletionResult {
+        guard let url = endpoint else {
+            throw MycellmError.transportError("No remote endpoint configured")
+        }
+
+        let body = ChatRequest(model: model, messages: messages, temperature: temperature, max_tokens: maxTokens, stream: false)
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 60
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if !apiKey.isEmpty {
+            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        }
+        request.httpBody = try JSONEncoder().encode(body)
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        if let http = response as? HTTPURLResponse, http.statusCode != 200 {
+            throw MycellmError.transportError("HTTP \(http.statusCode): \(String(data: data, encoding: .utf8) ?? "")")
+        }
+
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let choices = json["choices"] as? [[String: Any]],
+              let message = choices.first?["message"] as? [String: Any],
+              let content = message["content"] as? String else {
+            throw MycellmError.transportError("Invalid response format")
+        }
+
+        let usage = json["usage"] as? [String: Any]
+        let mycellm = json["mycellm"] as? [String: Any]
+
+        return CompletionResult(
+            content: content,
+            promptTokens: usage?["prompt_tokens"] as? Int ?? 0,
+            completionTokens: usage?["completion_tokens"] as? Int ?? 0,
+            sourceNode: mycellm?["node"] as? String ?? "",
+            latencyMs: mycellm?["latency_ms"] as? Int ?? 0
+        )
     }
 
     /// Fetch available models from the remote endpoint.

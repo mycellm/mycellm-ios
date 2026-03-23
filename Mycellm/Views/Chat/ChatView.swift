@@ -346,29 +346,21 @@ struct ChatView: View {
 
         streamTask = Task {
             do {
-                var tokenCount = 0
-                var gotFirstToken = false
-
-                // Timeout: 30s for first token, then no timeout during streaming
-                let stream = await remoteClient.stream(
+                // Use non-streaming with metadata (gateway batches anyway)
+                let result = try await remoteClient.completeWithMetadata(
                     model: model,
                     messages: Array(chatMessages)
                 )
-
-                for try await chunk in stream {
-                    if Task.isCancelled { break }
-                    if !gotFirstToken {
-                        gotFirstToken = true
-                        messages[responseIdx].content = "" // clear "thinking" state
-                    }
-                    messages[responseIdx].content += chunk
-                    tokenCount += 1
-                }
                 let endTime = Date()
                 let elapsed = endTime.timeIntervalSince(messages[responseIdx].startTime)
-                messages[responseIdx].tokenCount = tokenCount
+                messages[responseIdx].content = result.content
+                messages[responseIdx].tokenCount = result.completionTokens > 0
+                    ? result.completionTokens
+                    : result.content.split(separator: " ").count * 4 / 3
+                messages[responseIdx].sourceNode = result.sourceNode
                 messages[responseIdx].endTime = endTime
-                messages[responseIdx].tokensPerSecond = elapsed > 0 ? Double(tokenCount) / elapsed : 0
+                messages[responseIdx].tokensPerSecond = elapsed > 0
+                    ? Double(messages[responseIdx].tokenCount) / elapsed : 0
                 messages[responseIdx].isStreaming = false
             } catch is CancellationError {
                 messages[responseIdx].endTime = Date()
@@ -472,9 +464,9 @@ struct MessageBubble: View {
                         .foregroundStyle(Color.consoleText)
                         .textSelection(.enabled)
                 } else {
-                    // Render markdown for assistant messages
+                    // Render markdown for assistant messages (system font for proper MD rendering)
                     Text(LocalizedStringKey(message.content))
-                        .font(.mono(13))
+                        .font(.system(size: 14))
                         .foregroundStyle(Color.consoleText)
                         .textSelection(.enabled)
                         .tint(Color.relayBlue)
@@ -522,6 +514,13 @@ struct MessageBubble: View {
                             Text(ms < 1000 ? "\(ms)ms" : String(format: "%.1fs", Double(ms) / 1000))
                                 .font(.mono(9))
                                 .foregroundStyle(Color.consoleDim)
+                        }
+
+                        // Source node attribution
+                        if !message.sourceNode.isEmpty {
+                            Text("node:\(message.sourceNode)")
+                                .font(.mono(8))
+                                .foregroundStyle(Color.consoleDim.opacity(0.7))
                         }
                     }
                 }
