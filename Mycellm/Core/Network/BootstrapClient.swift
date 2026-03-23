@@ -1,8 +1,7 @@
 import Foundation
 import Network
 
-/// Bootstrap connection: QUIC preferred, HTTP fallback.
-/// Maintains connection to bootstrap node for network participation.
+/// Bootstrap connection: QUIC preferred (bidirectional streams), HTTP+WS fallback.
 actor BootstrapClient {
     static let defaultBootstrap = "bootstrap.mycellm.dev"
     static let defaultPort: UInt16 = 8421
@@ -34,32 +33,37 @@ actor BootstrapClient {
     private var bootstrapHost: String = defaultBootstrap
     private var bootstrapPort: UInt16 = defaultPort
     private var httpEndpoint: String = "https://api.mycellm.dev"
-    private var connection: NWConnection?
+    private var quicTransport: QUICTransport?
     private var retryTask: Task<Void, Never>?
     private var quicRetryTask: Task<Void, Never>?
     private var keepRunning = false
     private var peerId: String = ""
+    private var capabilities: Capabilities = Capabilities()
     private var onStateChange: (@Sendable (ConnectionState, Transport, String?) -> Void)?
+    private var onInferenceRequest: ((MessageEnvelope) async -> MessageEnvelope?)?
 
     func configure(host: String, port: UInt16) {
         bootstrapHost = host
         bootstrapPort = port
-        // Derive HTTP endpoint from bootstrap host
-        if host == Self.defaultBootstrap {
-            httpEndpoint = "https://api.mycellm.dev"
-        } else {
-            httpEndpoint = "http://\(host):8420"
-        }
+        httpEndpoint = host == Self.defaultBootstrap
+            ? "https://api.mycellm.dev"
+            : "http://\(host):8420"
     }
 
     func setStateHandler(_ handler: @escaping @Sendable (ConnectionState, Transport, String?) -> Void) {
         onStateChange = handler
     }
 
+    /// Set handler for incoming inference requests from the bootstrap relay.
+    func setInferenceHandler(_ handler: @escaping (MessageEnvelope) async -> MessageEnvelope?) {
+        onInferenceRequest = handler
+    }
+
     // MARK: - Connect
 
     func connect(peerId: String, capabilities: Capabilities) async {
         self.peerId = peerId
+        self.capabilities = capabilities
         keepRunning = true
         retryCount = 0
         await attemptQUIC()
@@ -71,8 +75,8 @@ actor BootstrapClient {
         quicRetryTask?.cancel()
         retryTask = nil
         quicRetryTask = nil
-        connection?.cancel()
-        connection = nil
+        Task { await await quicTransport?.disconnect() }
+        quicTransport = nil
         setState(.disconnected, transport: .none, error: nil)
     }
 
@@ -81,101 +85,65 @@ actor BootstrapClient {
     private func attemptQUIC() async {
         setState(.connecting, transport: .quic, error: nil)
 
-        let quicOptions = NWProtocolQUIC.Options(alpn: [QUICTransport.alpn])
-        sec_protocol_options_set_verify_block(
-            quicOptions.securityProtocolOptions,
-            { _, _, completion in completion(true) },
-            .main
-        )
+        let qt = QUICTransport()
+        quicTransport = qt
 
-        let params = NWParameters(quic: quicOptions)
-        let endpoint = NWEndpoint.hostPort(
-            host: NWEndpoint.Host(bootstrapHost),
-            port: NWEndpoint.Port(rawValue: bootstrapPort)!
-        )
-        let conn = NWConnection(to: endpoint, using: params)
-        connection = conn
-
-        // Timeout for QUIC connection
-        let timeoutTask = Task {
-            try? await Task.sleep(for: .seconds(10))
-            guard !Task.isCancelled else { return }
-            conn.cancel()
-            await self.handleQUICFailure("Connection timeout (10s)")
+        // Set message handler for server-initiated streams
+        await qt.setMessageHandler { [weak self] envelope in
+            return await self?.handleIncoming(envelope)
         }
 
-        conn.stateUpdateHandler = { [weak self] newState in
-            switch newState {
-            case .ready:
-                timeoutTask.cancel()
-                Task { await self?.handleQUICState(newState) }
-            case .failed, .cancelled:
-                timeoutTask.cancel()
-                Task { await self?.handleQUICState(newState) }
-            default:
-                break // ignore preparing, waiting, etc.
+        // Connect with timeout
+        do {
+            try await withThrowingTaskGroup(of: Void.self) { group in
+                group.addTask {
+                    try await qt.connect(host: self.bootstrapHost, port: self.bootstrapPort)
+                }
+                group.addTask {
+                    try await Task.sleep(for: .seconds(10))
+                    throw MycellmError.transportError("QUIC timeout")
+                }
+                try await group.next()
+                group.cancelAll()
             }
+        } catch {
+            await handleQUICFailure(error.localizedDescription)
+            return
         }
-        conn.start(queue: .global(qos: .userInitiated))
-    }
 
-    private func handleQUICState(_ newState: NWConnection.State) async {
-        switch newState {
-        case .ready:
-            let wasConnected = state == .connected
+        // Send NodeHello
+        setState(.handshaking, transport: .quic, error: nil)
+        let hello = MessageEnvelope(
+            type: .nodeHello,
+            payload: [
+                "peer_id": .string(peerId),
+                "capabilities": .map(capabilities.toDict()),
+                "platform": .string("ios"),
+                "version": .string("0.1.0"),
+            ],
+            fromPeer: peerId
+        )
+
+        do {
+            try await qt.send(hello)
             setState(.connected, transport: .quic, error: nil)
             connectedAt = Date()
             retryCount = 0
-            if !wasConnected {
-                // Start keepalive — monitor connection health
-                startKeepAlive()
-            }
-
-        case .failed(let error):
-            if state == .connected {
-                // Was connected, lost connection — reconnect silently
-                setState(.reconnecting, transport: .quic, error: "Connection lost")
-                connection?.cancel()
-                connection = nil
-                retryCount = 0
-                retryTask = Task {
-                    try? await Task.sleep(for: .seconds(5))
-                    guard !Task.isCancelled, keepRunning else { return }
-                    await attemptQUIC()
-                }
-            } else {
-                await handleQUICFailure(error.localizedDescription)
-            }
-
-        case .cancelled:
-            // Only treat as failure if we weren't already connected or falling back
-            if keepRunning && state != .fallbackHTTP && state != .connected {
-                await handleQUICFailure("Connection cancelled")
-            }
-
-        default:
-            break
+        } catch {
+            await handleQUICFailure("Handshake failed: \(error.localizedDescription)")
         }
     }
 
-    private func startKeepAlive() {
-        // Connection drops will be handled by stateUpdateHandler (.failed/.cancelled)
-        // No additional monitoring needed — NWConnection handles this
-    }
-
     private func handleQUICFailure(_ reason: String) async {
-        connection?.cancel()
-        connection = nil
+        await quicTransport?.disconnect()
+        quicTransport = nil
         retryCount += 1
 
         if retryCount >= Self.quicRetryBeforeFallback {
-            // Fall back to HTTP
-            await fallbackToHTTP(reason: "QUIC failed after \(retryCount) attempts: \(reason)")
+            await fallbackToHTTP(reason: "QUIC failed (\(retryCount)x): \(reason)")
         } else {
-            // Retry QUIC
             let delay = Self.retryDelays[min(retryCount - 1, Self.retryDelays.count - 1)]
-            setState(.reconnecting, transport: .quic, error: "Retry \(retryCount) in \(Int(delay))s — \(reason)")
-
+            setState(.reconnecting, transport: .quic, error: "Retry \(retryCount) in \(Int(delay))s")
             retryTask = Task {
                 try? await Task.sleep(for: .seconds(delay))
                 guard !Task.isCancelled, keepRunning else { return }
@@ -187,30 +155,44 @@ actor BootstrapClient {
     // MARK: - HTTP Fallback
 
     private func fallbackToHTTP(reason: String) async {
-        setState(.fallbackHTTP, transport: .http, error: "Trying HTTP fallback…")
+        setState(.fallbackHTTP, transport: .http, error: "Trying HTTP…")
 
-        // Register via HTTP
         do {
-            try await httpRegister()
+            try await httpAnnounce()
             setState(.connected, transport: .http, error: nil)
             connectedAt = Date()
 
-            // Keep trying QUIC in background every 60s
+            // Re-announce periodically (HTTP is stateless)
             quicRetryTask = Task {
                 while !Task.isCancelled && keepRunning {
+                    // Re-announce every 60s to stay "online"
                     try? await Task.sleep(for: .seconds(60))
                     guard !Task.isCancelled, keepRunning else { break }
-                    // Try QUIC silently
-                    let success = await tryQUICSilent()
-                    if success {
-                        // Upgraded to QUIC
-                        break
+                    try? await httpAnnounce()
+
+                    // Also try QUIC silently
+                    let qt = QUICTransport()
+                    do {
+                        try await withThrowingTaskGroup(of: Void.self) { group in
+                            group.addTask { try await qt.connect(host: self.bootstrapHost, port: self.bootstrapPort) }
+                            group.addTask { try await Task.sleep(for: .seconds(5)); throw MycellmError.transportError("timeout") }
+                            try await group.next()
+                            group.cancelAll()
+                        }
+                        // QUIC works now — upgrade
+                        await qt.setMessageHandler { [weak self] envelope in
+                            return await self?.handleIncoming(envelope)
+                        }
+                        quicTransport = qt
+                        setState(.connected, transport: .quic, error: nil)
+                        break // stop the re-announce loop
+                    } catch {
+                        await qt.disconnect()
                     }
                 }
             }
         } catch {
-            setState(.failed, transport: .http, error: "HTTP fallback also failed: \(error.localizedDescription)")
-            // Retry everything after delay
+            setState(.failed, transport: .http, error: error.localizedDescription)
             retryTask = Task {
                 try? await Task.sleep(for: .seconds(30))
                 guard !Task.isCancelled, keepRunning else { return }
@@ -220,84 +202,65 @@ actor BootstrapClient {
         }
     }
 
-    private func httpRegister() async throws {
-        // Verify bootstrap is reachable via HTTP health check
-        guard let url = URL(string: "\(httpEndpoint)/health") else {
-            throw MycellmError.transportError("Invalid HTTP endpoint")
+    private func httpAnnounce() async throws {
+        guard let url = URL(string: "\(httpEndpoint)/v1/admin/nodes/announce") else {
+            throw MycellmError.transportError("Invalid endpoint")
         }
+
+        let modelList = capabilities.models.map { m -> [String: Any] in
+            var d: [String: Any] = ["name": m.name, "backend": m.backend]
+            if !m.quant.isEmpty { d["quant"] = m.quant }
+            if m.paramCountB > 0 { d["param_count_b"] = m.paramCountB }
+            if !m.scope.isEmpty { d["scope"] = m.scope }
+            return d
+        }
+
+        let apiPort = await MainActor.run { Preferences.shared.apiPort }
+        let localIP = getLocalIPAddress() ?? "0.0.0.0"
+
+        let body: [String: Any] = [
+            "peer_id": peerId,
+            "platform": "ios",
+            "version": "0.1.0",
+            "api_addr": "\(localIP):\(apiPort)",
+            "capabilities": [
+                "role": capabilities.role,
+                "models": modelList,
+                "hardware": [
+                    "gpu": capabilities.hardware.gpu,
+                    "vram_gb": capabilities.hardware.vramGb,
+                    "backend": capabilities.hardware.backend,
+                ] as [String: Any],
+                "max_concurrent": capabilities.maxConcurrent,
+                "est_tok_s": capabilities.estTokS,
+            ] as [String: Any],
+        ]
 
         var request = URLRequest(url: url)
-        request.timeoutInterval = 10
+        request.httpMethod = "POST"
+        request.timeoutInterval = 15
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
 
         let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse,
-              (200...299).contains(http.statusCode) else {
-            throw MycellmError.transportError("Bootstrap not reachable")
-        }
-
-        // Parse bootstrap peer_id from health response
-        if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let bootstrapPeerId = json["peer_id"] as? String {
-            // Successfully connected to bootstrap node
-            _ = bootstrapPeerId
+        guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
+            let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+            let body = String(data: data, encoding: .utf8) ?? ""
+            throw MycellmError.transportError("Announce failed (HTTP \(code)): \(body)")
         }
     }
 
-    /// Try QUIC silently — returns true if connected.
-    private func tryQUICSilent() async -> Bool {
-        let quicOptions = NWProtocolQUIC.Options(alpn: [QUICTransport.alpn])
-        sec_protocol_options_set_verify_block(
-            quicOptions.securityProtocolOptions,
-            { _, _, completion in completion(true) },
-            .main
-        )
+    // MARK: - Incoming Message Dispatch
 
-        let params = NWParameters(quic: quicOptions)
-        let endpoint = NWEndpoint.hostPort(
-            host: NWEndpoint.Host(bootstrapHost),
-            port: NWEndpoint.Port(rawValue: bootstrapPort)!
-        )
-        let conn = NWConnection(to: endpoint, using: params)
-        let resolver = ContinuationResolver()
-
-        return await withCheckedContinuation { cont in
-            let timeout = Task {
-                try? await Task.sleep(for: .seconds(5))
-                if resolver.tryResolve() {
-                    conn.cancel()
-                    cont.resume(returning: false)
-                }
-            }
-
-            conn.stateUpdateHandler = { [weak self] state in
-                switch state {
-                case .ready:
-                    if resolver.tryResolve() {
-                        timeout.cancel()
-                        Task {
-                            await self?.connection?.cancel()
-                            await self?.upgradeToQUIC(conn)
-                            cont.resume(returning: true)
-                        }
-                    }
-                case .failed, .cancelled:
-                    if resolver.tryResolve() {
-                        timeout.cancel()
-                        cont.resume(returning: false)
-                    }
-                default:
-                    break
-                }
-            }
-            conn.start(queue: .global(qos: .userInitiated))
+    private func handleIncoming(_ envelope: MessageEnvelope) async -> MessageEnvelope? {
+        switch envelope.type {
+        case .inferenceReq:
+            return await onInferenceRequest?(envelope)
+        case .ping:
+            return MessageBuilders.pong(from: peerId, requestId: envelope.id)
+        default:
+            return nil
         }
-    }
-    private func upgradeToQUIC(_ conn: NWConnection) {
-        connection = conn
-        quicRetryTask?.cancel()
-        quicRetryTask = nil
-        setState(.connected, transport: .quic, error: nil)
-        connectedAt = Date()
     }
 
     // MARK: - State
@@ -310,16 +273,24 @@ actor BootstrapClient {
     }
 }
 
-/// Thread-safe one-shot resolver for continuations.
-private final class ContinuationResolver: @unchecked Sendable {
-    private var resolved = false
-    private let lock = NSLock()
+// MARK: - Local IP Detection
 
-    func tryResolve() -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        if resolved { return false }
-        resolved = true
-        return true
+private func getLocalIPAddress() -> String? {
+    var address: String?
+    var ifaddr: UnsafeMutablePointer<ifaddrs>?
+    guard getifaddrs(&ifaddr) == 0, let firstAddr = ifaddr else { return nil }
+    defer { freeifaddrs(ifaddr) }
+
+    for ptr in sequence(first: firstAddr, next: { $0.pointee.ifa_next }) {
+        let interface = ptr.pointee
+        let addrFamily = interface.ifa_addr.pointee.sa_family
+        guard addrFamily == UInt8(AF_INET) else { continue }
+        let name = String(cString: interface.ifa_name)
+        guard name == "en0" || name == "en1" else { continue }
+        var hostname = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+        getnameinfo(interface.ifa_addr, socklen_t(interface.ifa_addr.pointee.sa_len),
+                    &hostname, socklen_t(hostname.count), nil, 0, NI_NUMERICHOST)
+        address = String(cString: hostname)
     }
+    return address
 }

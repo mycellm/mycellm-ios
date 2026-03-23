@@ -1,85 +1,24 @@
 import Foundation
 import Network
 
-/// QUIC transport using Network.framework. ALPN: "mycellm-v1".
+/// QUIC transport using NWConnectionGroup for multiplexed bidirectional streams.
+/// Wire format: one raw CBOR message per stream, stream closed after write.
 actor QUICTransport {
     static let alpn = "mycellm-v1"
     static let defaultPort: UInt16 = 8421
 
-    enum State: Sendable {
-        case stopped
-        case listening(UInt16)
-        case error(String)
-    }
+    private var group: NWConnectionGroup?
+    private(set) var connected = false
+    private var onMessage: ((MessageEnvelope) async -> MessageEnvelope?)?
+    private var pendingResponses: [String: CheckedContinuation<MessageEnvelope, Error>] = [:]
 
-    private(set) var state: State = .stopped
-    private var listener: NWListener?
-    private var connections: [String: PeerConnection] = [:]
-    private var onMessage: ((MessageEnvelope, PeerConnection) async -> Void)?
-
-    /// Set the message handler for incoming messages.
-    func setMessageHandler(_ handler: @escaping (MessageEnvelope, PeerConnection) async -> Void) {
+    func setMessageHandler(_ handler: @escaping (MessageEnvelope) async -> MessageEnvelope?) {
         onMessage = handler
     }
 
-    // MARK: - Server
+    // MARK: - Connect
 
-    func startServer(port: UInt16 = defaultPort) throws {
-        let quicOptions = NWProtocolQUIC.Options(alpn: [Self.alpn])
-
-        // Accept any peer certificate (we verify at app layer via NodeHello)
-        sec_protocol_options_set_verify_block(
-            quicOptions.securityProtocolOptions,
-            { _, _, completion in completion(true) },
-            .main
-        )
-
-        let params = NWParameters(quic: quicOptions)
-        params.includePeerToPeer = true
-
-        guard let nwPort = NWEndpoint.Port(rawValue: port) else {
-            throw MycellmError.transportError("Invalid port: \(port)")
-        }
-
-        let listener = try NWListener(using: params, on: nwPort)
-        self.listener = listener
-
-        listener.newConnectionHandler = { [weak self] connection in
-            Task { await self?.handleIncomingConnection(connection) }
-        }
-
-        listener.stateUpdateHandler = { [weak self] newState in
-            Task {
-                switch newState {
-                case .ready:
-                    await self?.setState(.listening(port))
-                case .failed(let error):
-                    await self?.setState(.error(error.localizedDescription))
-                default:
-                    break
-                }
-            }
-        }
-
-        listener.start(queue: .global(qos: .userInitiated))
-        state = .listening(port)
-    }
-
-    func stopServer() {
-        listener?.cancel()
-        listener = nil
-        for conn in connections.values {
-            conn.close()
-        }
-        connections.removeAll()
-        state = .stopped
-    }
-
-    private func setState(_ s: State) { state = s }
-
-    // MARK: - Client
-
-    func connect(host: String, port: UInt16) async throws -> PeerConnection {
+    func connect(host: String, port: UInt16) async throws {
         let quicOptions = NWProtocolQUIC.Options(alpn: [Self.alpn])
         sec_protocol_options_set_verify_block(
             quicOptions.securityProtocolOptions,
@@ -87,129 +26,186 @@ actor QUICTransport {
             .main
         )
 
-        let params = NWParameters(quic: quicOptions)
-        let endpoint = NWEndpoint.hostPort(
+        let descriptor = NWMultiplexGroup(to: .hostPort(
             host: NWEndpoint.Host(host),
             port: NWEndpoint.Port(rawValue: port)!
-        )
-        let nwConn = NWConnection(to: endpoint, using: params)
+        ))
+        let params = NWParameters(quic: quicOptions)
+        let grp = NWConnectionGroup(with: descriptor, using: params)
+        group = grp
 
-        return try await withCheckedThrowingContinuation { cont in
-            nwConn.stateUpdateHandler = { newState in
-                switch newState {
-                case .ready:
-                    let peer = PeerConnection(peerId: "", remoteAddress: "\(host):\(port)")
-                    peer.nwConnection = nwConn
-                    cont.resume(returning: peer)
-                case .failed(let error):
-                    cont.resume(throwing: MycellmError.transportError("Connection failed: \(error)"))
-                case .cancelled:
-                    cont.resume(throwing: MycellmError.transportError("Connection cancelled"))
-                default:
-                    break
-                }
-            }
-            nwConn.start(queue: .global(qos: .userInitiated))
+        // Handle server-initiated streams
+        grp.newConnectionHandler = { [weak self] stream in
+            Task { await self?.handleIncomingStream(stream) }
         }
-    }
 
-    // MARK: - Connection Handling
+        let resolver = ContinuationResolver<Void>()
 
-    private func handleIncomingConnection(_ nwConn: NWConnection) {
-        let peer = PeerConnection(peerId: "", remoteAddress: nwConn.endpoint.debugDescription)
-        peer.nwConnection = nwConn
-        peer.setState(.connecting)
-
-        nwConn.stateUpdateHandler = { [weak self] newState in
-            switch newState {
+        grp.stateUpdateHandler = { state in
+            switch state {
             case .ready:
-                peer.setState(.handshaking)
-                Task { await self?.receiveMessages(from: peer) }
-            case .failed, .cancelled:
-                peer.setState(.closed)
-                Task { await self?.removePeer(peer) }
+                resolver.resumeIfNeeded(returning: ())
+            case .failed(let error):
+                resolver.resumeIfNeeded(throwing: MycellmError.transportError("QUIC: \(error)"))
+            case .cancelled:
+                resolver.resumeIfNeeded(throwing: MycellmError.transportError("QUIC cancelled"))
             default:
                 break
             }
         }
-        nwConn.start(queue: .global(qos: .userInitiated))
+        grp.start(queue: .global(qos: .userInitiated))
+
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+            resolver.setContinuation(cont)
+        }
+
+        connected = true
     }
 
-    private func receiveMessages(from peer: PeerConnection) async {
-        guard let conn = peer.nwConnection else { return }
+    func disconnect() {
+        group?.cancel()
+        group = nil
+        connected = false
+        // Cancel all pending responses
+        for (_, cont) in pendingResponses {
+            cont.resume(throwing: MycellmError.transportError("Disconnected"))
+        }
+        pendingResponses.removeAll()
+    }
 
-        while peer.state != .closed {
-            do {
-                let data = try await receiveFrame(from: conn)
-                let envelope = try MessageEnvelope.fromCBOR(data)
+    // MARK: - Send
 
-                // First message must be NodeHello for unauthenticated connections
-                if case .handshaking = peer.state, envelope.type == .nodeHello {
-                    // Verify hello
-                    if let helloData = envelope.payload["hello_data"]?.stringValue,
-                       let helloCBOR = Data(hex: helloData) {
-                        // TODO: full NodeHello verification
-                    }
-                    peer.setPeerId(envelope.fromPeer)
-                    peer.setState(.authenticated)
-                    connections[envelope.fromPeer] = peer
+    /// Send a message on a new outbound stream (raw CBOR, end stream).
+    func send(_ message: MessageEnvelope) async throws {
+        guard let group else { throw MycellmError.transportError("Not connected") }
+        guard let stream = NWConnection(from: group) else {
+            throw MycellmError.transportError("Failed to create stream")
+        }
+        let data = message.toCBOR()
+
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+            let resolver = ContinuationResolver<Void>()
+            resolver.setContinuation(cont)
+
+            stream.stateUpdateHandler = { state in
+                if case .ready = state {
+                    stream.send(content: data, contentContext: .finalMessage, isComplete: true,
+                                completion: .contentProcessed { error in
+                        if let error {
+                            resolver.resumeIfNeeded(throwing: error)
+                        } else {
+                            resolver.resumeIfNeeded(returning: ())
+                        }
+                    })
+                } else if case .failed(let error) = state {
+                    resolver.resumeIfNeeded(throwing: error)
                 }
-
-                await onMessage?(envelope, peer)
-            } catch {
-                break
             }
+            stream.start(queue: .global(qos: .userInitiated))
         }
     }
 
-    private func receiveFrame(from conn: NWConnection) async throws -> Data {
-        try await withCheckedThrowingContinuation { cont in
-            // Read 4-byte length header
-            conn.receive(minimumIncompleteLength: 4, maximumLength: 4) { data, _, _, error in
-                if let error {
-                    cont.resume(throwing: error)
-                    return
-                }
-                guard let lengthData = data, lengthData.count == 4 else {
-                    cont.resume(throwing: MycellmError.transportError("Failed to read frame header"))
-                    return
-                }
-                let length = Int(lengthData.withUnsafeBytes { $0.load(as: UInt32.self).bigEndian })
-                guard length <= 10 * 1024 * 1024 else {
-                    cont.resume(throwing: MycellmError.frameTooLarge(length))
-                    return
-                }
-
-                // Read payload
-                conn.receive(minimumIncompleteLength: length, maximumLength: length) { payload, _, _, error in
-                    if let error {
-                        cont.resume(throwing: error)
-                    } else if let payload {
-                        cont.resume(returning: Data(payload))
-                    } else {
-                        cont.resume(throwing: MycellmError.transportError("Empty payload"))
-                    }
+    /// Send and wait for response matched by message ID.
+    func sendAndWait(_ message: MessageEnvelope, timeout: TimeInterval = 30) async throws -> MessageEnvelope {
+        try await withThrowingTaskGroup(of: MessageEnvelope.self) { taskGroup in
+            taskGroup.addTask {
+                try await withCheckedThrowingContinuation { cont in
+                    Task { await self.registerPending(id: message.id, cont: cont) }
                 }
             }
+            taskGroup.addTask {
+                try await Task.sleep(for: .seconds(timeout))
+                throw MycellmError.transportError("Timeout")
+            }
+
+            // Send after registering
+            try await send(message)
+
+            let result = try await taskGroup.next()!
+            taskGroup.cancelAll()
+            return result
         }
     }
 
-    /// Send a framed message to a peer.
-    func send(_ message: MessageEnvelope, to peer: PeerConnection) throws {
-        guard let conn = peer.nwConnection else {
-            throw MycellmError.transportError("No connection for peer")
-        }
-        let data = message.toFramed()
-        conn.send(content: data, completion: .contentProcessed { error in
-            if let error {
-                print("Send error: \(error)")
+    private func registerPending(id: String, cont: CheckedContinuation<MessageEnvelope, Error>) {
+        pendingResponses[id] = cont
+    }
+
+    // MARK: - Receive
+
+    private func handleIncomingStream(_ stream: NWConnection) {
+        stream.stateUpdateHandler = { [weak self] state in
+            if case .ready = state {
+                Task { await self?.readStream(stream) }
             }
-        })
+        }
+        stream.start(queue: .global(qos: .userInitiated))
     }
 
-    private func removePeer(_ peer: PeerConnection) {
-        connections.removeValue(forKey: peer.peerId)
+    private nonisolated func readStreamData(_ stream: NWConnection) async -> Data {
+        var buffer = Data()
+        while true {
+            let result: (Data?, Bool) = await withCheckedContinuation { cont in
+                stream.receive(minimumIncompleteLength: 1, maximumLength: 65536) { data, _, isComplete, _ in
+                    cont.resume(returning: (data, isComplete))
+                }
+            }
+            if let data = result.0 { buffer.append(data) }
+            if result.1 || buffer.count > 10 * 1024 * 1024 { break }
+        }
+        return buffer
     }
 
-    var connectionCount: Int { connections.count }
+    private func readStream(_ stream: NWConnection) async {
+        let buffer = await readStreamData(stream)
+        guard !buffer.isEmpty else { return }
+
+        guard let envelope = try? MessageEnvelope.fromCBOR(buffer) else { return }
+
+        // Check pending responses first
+        if let cont = pendingResponses.removeValue(forKey: envelope.id) {
+            cont.resume(returning: envelope)
+            return
+        }
+
+        // Dispatch to handler
+        if let handler = onMessage, let response = await handler(envelope) {
+            try? await send(response)
+        }
+    }
+
+    var isConnected: Bool { connected }
+}
+
+// MARK: - Thread-safe continuation resolver
+
+private final class ContinuationResolver<T: Sendable>: @unchecked Sendable {
+    private var continuation: CheckedContinuation<T, Error>?
+    private var resolved = false
+    private let lock = NSLock()
+
+    func setContinuation(_ cont: CheckedContinuation<T, Error>) {
+        lock.withLock {
+            if resolved { return }
+            continuation = cont
+        }
+    }
+
+    func resumeIfNeeded(returning value: T) {
+        lock.withLock {
+            guard !resolved else { return }
+            resolved = true
+            continuation?.resume(returning: value)
+            continuation = nil
+        }
+    }
+
+    func resumeIfNeeded(throwing error: Error) {
+        lock.withLock {
+            guard !resolved else { return }
+            resolved = true
+            continuation?.resume(throwing: error)
+            continuation = nil
+        }
+    }
 }

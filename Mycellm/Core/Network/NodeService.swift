@@ -24,7 +24,6 @@ final class NodeService: @unchecked Sendable {
 
     // MARK: - Services
     private let httpServer = HTTPServer()
-    private let quicTransport = QUICTransport()
     let bootstrapClient = BootstrapClient()
     private let peerManager = PeerManager()
     let creditLedger = CreditLedger()
@@ -104,20 +103,6 @@ final class NodeService: @unchecked Sendable {
             }
         }
 
-        // Start QUIC transport if network mode requires it
-        if networkMode.usesQUIC {
-            do {
-                try await quicTransport.startServer(port: UInt16(prefs.quicPort))
-
-                // Set up message dispatch
-                await quicTransport.setMessageHandler { [weak self] envelope, peer in
-                    await self?.handleMessage(envelope, from: peer)
-                }
-            } catch {
-                addEvent(.error("QUIC transport failed: \(error.localizedDescription)"))
-            }
-        }
-
         modelManager.scanLocalModels()
 
         // Connect to bootstrap if network mode requires it
@@ -160,6 +145,11 @@ final class NodeService: @unchecked Sendable {
                 version: "0.1.0"
             )
 
+            // Handle inference requests relayed from bootstrap
+            await bootstrapClient.setInferenceHandler { [weak self] envelope in
+                return await self?.handleRelayedInference(envelope)
+            }
+
             addEvent(.networkModeChanged(networkMode))
             await bootstrapClient.connect(peerId: peerId, capabilities: caps)
         }
@@ -168,7 +158,6 @@ final class NodeService: @unchecked Sendable {
     func stop() async {
         guard isRunning else { return }
         await httpServer.stop()
-        await quicTransport.stopServer()
         await bootstrapClient.disconnect()
         bootstrapState = .disconnected
         bootstrapTransport = .none
@@ -177,110 +166,52 @@ final class NodeService: @unchecked Sendable {
         addEvent(.nodeStopped)
     }
 
-    // MARK: - Message Dispatch
+    // MARK: - Relayed Inference (from bootstrap)
 
-    private func handleMessage(_ envelope: MessageEnvelope, from peer: PeerConnection) async {
-        switch envelope.type {
-        case .ping:
-            let pong = MessageBuilders.pong(from: peerId, requestId: envelope.id)
-            try? await quicTransport.send(pong, to: peer)
+    private func handleRelayedInference(_ envelope: MessageEnvelope) async -> MessageEnvelope? {
+        guard let model = envelope.payload["model"]?.stringValue else {
+            return MessageBuilders.error(from: peerId, requestId: envelope.id,
+                                         code: .invalidMessage, message: "Missing model")
+        }
+        let messages = envelope.payload["messages"]?.arrayValue?.compactMap { item -> [String: String]? in
+            guard let m = item.mapValue else { return nil }
+            return ["role": m["role"]?.stringValue ?? "", "content": m["content"]?.stringValue ?? ""]
+        } ?? []
+        let temp = envelope.payload["temperature"]?.doubleValue ?? 0.7
+        let maxTok = envelope.payload["max_tokens"]?.intValue ?? 2048
 
-        case .inferenceReq:
-            guard let model = envelope.payload["model"]?.stringValue else { return }
-            let messages = envelope.payload["messages"]?.arrayValue?.compactMap { item -> [String: String]? in
-                guard let m = item.mapValue else { return nil }
-                return ["role": m["role"]?.stringValue ?? "", "content": m["content"]?.stringValue ?? ""]
-            } ?? []
-            let temp = envelope.payload["temperature"]?.doubleValue ?? 0.7
-            let maxTok = envelope.payload["max_tokens"]?.intValue ?? 2048
+        do {
+            let result = try await modelManager.engine.complete(
+                messages: messages, temperature: temp, maxTokens: maxTok
+            )
+            totalInferences += 1
+            let totalTokens = result.promptTokens + result.completionTokens
+            addEvent(.inferenceCompleted(model: model, tokens: totalTokens))
 
-            do {
-                let result = try await modelManager.engine.complete(
-                    messages: messages, temperature: temp, maxTokens: maxTok
+            // Generate credit receipt
+            let cost = Double(totalTokens) * 0.001
+            if let dk = deviceKey {
+                let _ = try? await creditLedger.earn(
+                    amount: cost, from: envelope.fromPeer,
+                    seederId: peerId, model: model,
+                    tokens: totalTokens, requestId: envelope.id,
+                    deviceKey: dk
                 )
-                let resp = MessageBuilders.inferenceResponse(
-                    from: peerId, requestId: envelope.id,
-                    text: result.text, model: model,
-                    promptTokens: result.promptTokens,
-                    completionTokens: result.completionTokens
-                )
-                try? await quicTransport.send(resp, to: peer)
-
-                // Generate signed credit receipt
-                let totalTokens = result.promptTokens + result.completionTokens
-                let cost = Double(totalTokens) * 0.001 // 0.001 credits per token
-                if let dk = deviceKey {
-                    if let receipt = try? await creditLedger.earn(
-                        amount: cost, from: envelope.fromPeer,
-                        seederId: peerId, model: model,
-                        tokens: totalTokens, requestId: envelope.id,
-                        deviceKey: dk
-                    ) {
-                        // Send receipt to consumer
-                        let receiptMsg = MessageBuilders.signedCreditReceipt(
-                            from: peerId,
-                            consumerId: envelope.fromPeer,
-                            seederId: peerId,
-                            model: model,
-                            tokens: totalTokens,
-                            cost: cost,
-                            timestamp: receipt.timestamp,
-                            signature: receipt.signature
-                        )
-                        try? await quicTransport.send(receiptMsg, to: peer)
-                        totalInferences += 1
-                        creditBalance = await creditLedger.balance
-                        addEvent(.inferenceCompleted(model: model, tokens: totalTokens))
-                    }
-                }
-            } catch {
-                let errMsg = MessageBuilders.error(
-                    from: peerId, requestId: envelope.id,
-                    code: .backendError, message: error.localizedDescription
-                )
-                try? await quicTransport.send(errMsg, to: peer)
+                creditBalance = await creditLedger.balance
             }
 
-        case .peerQuery:
-            let resp = MessageBuilders.peerResponse(from: peerId, requestId: envelope.id, peers: [])
-            try? await quicTransport.send(resp, to: peer)
-
-        case .creditReceipt:
-            // Incoming receipt from a seeder — verify and record spend
-            guard let consumerId = envelope.payload["consumer_id"]?.stringValue,
-                  let seederId = envelope.payload["seeder_id"]?.stringValue,
-                  let model = envelope.payload["model"]?.stringValue,
-                  let tokens = envelope.payload["tokens"]?.intValue,
-                  let cost = envelope.payload["cost"]?.doubleValue,
-                  let timestamp = envelope.payload["timestamp"]?.doubleValue,
-                  let signature = envelope.payload["signature"]?.stringValue else { break }
-
-            // Check replay
-            guard await receiptValidator.checkReplay(requestId: envelope.id) else { break }
-            guard await receiptValidator.checkCreditRate(peerId: envelope.fromPeer) else { break }
-
-            let receipt = CreditLedger.SignedReceipt(
-                consumerId: consumerId, seederId: seederId,
-                model: model, tokens: tokens, cost: cost,
-                requestId: envelope.id, timestamp: timestamp,
-                signature: signature
+            return MessageBuilders.inferenceResponse(
+                from: peerId, requestId: envelope.id,
+                text: result.text, model: model,
+                promptTokens: result.promptTokens,
+                completionTokens: result.completionTokens
             )
-
-            // We'd need the seeder's pubkey to verify — for now trust receipts from authenticated peers
-            let _ = await creditLedger.spend(
-                receipt: receipt,
-                seederPubkeyBytes: peer.peerId.isEmpty ? Data() : Data()
-            )
-            creditBalance = await creditLedger.balance
-
-        case .fleetCommand:
-            // TODO: delegate to FleetHandler
-            break
-
-        default:
-            break
+        } catch {
+            return MessageBuilders.error(from: peerId, requestId: envelope.id,
+                                         code: .backendError, message: error.localizedDescription)
         }
     }
+
 
     /// Periodically submit receipts to bootstrap for auditing.
     func flushReceipts() async {

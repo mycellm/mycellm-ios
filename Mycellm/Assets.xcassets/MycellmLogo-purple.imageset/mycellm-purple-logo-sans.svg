@@ -20,41 +20,41 @@
       }
     </style>
   </defs>
-  <g id="Layer_1" shape-rendering="crispEdges">
+  <g id="Layer_1">
     <g>
       <rect class="st3" x="315.1" width="393.8" height="78.8"/>
-      <rect class="st3" x="216.6" y="78.8" width="590.8" height="78.8"/>
-      <rect class="st3" x="118.2" y="157.5" width="98.5" height="78.8"/>
-      <rect class="st3" x="462.8" y="157.5" width="196.9" height="78.8"/>
-      <rect class="st3" x="807.4" y="157.5" width="98.5" height="78.8"/>
-      <rect class="st3" x="68.9" y="236.3" width="147.7" height="78.8"/>
-      <rect class="st3" x="462.8" y="236.3" width="196.9" height="78.8"/>
-      <rect class="st3" x="807.4" y="236.3" width="147.7" height="78.8"/>
-      <rect class="st3" x="19.7" y="315.1" width="196.9" height="78.8"/>
-      <rect class="st3" x="462.8" y="315.1" width="196.9" height="78.8"/>
-      <rect class="st3" x="807.4" y="315.1" width="196.9" height="78.8"/>
-      <rect class="st3" x="19.7" y="393.8" width="443.1" height="78.8"/>
-      <rect class="st3" x="708.9" y="393.8" width="295.4" height="78.8"/>
-      <rect class="st3" x="68.9" y="472.6" width="393.8" height="78.8"/>
-      <rect class="st3" x="708.9" y="472.6" width="246.2" height="78.8"/>
+      <rect class="st3" x="215.35" y="77.55" width="593.3" height="81.3"/>
+      <rect class="st3" x="116.95" y="156.25" width="101.0" height="81.3"/>
+      <rect class="st3" x="461.55" y="156.25" width="199.4" height="81.3"/>
+      <rect class="st3" x="806.15" y="156.25" width="101.0" height="81.3"/>
+      <rect class="st3" x="67.65" y="235.05" width="150.2" height="81.3"/>
+      <rect class="st3" x="461.55" y="235.05" width="199.4" height="81.3"/>
+      <rect class="st3" x="806.15" y="235.05" width="150.2" height="81.3"/>
+      <rect class="st3" x="18.45" y="313.85" width="199.4" height="81.3"/>
+      <rect class="st3" x="461.55" y="313.85" width="199.4" height="81.3"/>
+      <rect class="st3" x="806.15" y="313.85" width="199.4" height="81.3"/>
+      <rect class="st3" x="18.45" y="392.55" width="445.6" height="81.3"/>
+      <rect class="st3" x="707.65" y="392.55" width="297.9" height="81.3"/>
+      <rect class="st3" x="67.65" y="471.35" width="396.3" height="81.3"/>
+      <rect class="st3" x="707.65" y="471.35" width="248.7" height="81.3"/>
     </g>
     <g>
-      <rect class="st0" x="216.6" y="157.5" width="246.2" height="236.3"/>
-      <rect class="st0" x="659.7" y="157.5" width="147.7" height="236.3"/>
-      <rect class="st0" x="462.8" y="393.8" width="246.2" height="157.5"/>
+      <rect class="st0" x="215.35" y="156.25" width="248.7" height="238.8"/>
+      <rect class="st0" x="658.45" y="156.25" width="150.2" height="238.8"/>
+      <rect class="st0" x="461.55" y="392.55" width="248.7" height="160.0"/>
     </g>
     <g>
-      <rect class="st1" x="216.6" y="551.4" width="590.8" height="78.8"/>
-      <rect class="st1" x="167.4" y="630.2" width="689.2" height="78.8"/>
-      <rect class="st1" x="167.4" y="708.9" width="98.5" height="157.5"/>
-      <rect class="st1" x="364.3" y="708.9" width="295.4" height="157.5"/>
-      <rect class="st1" x="758.2" y="708.9" width="98.5" height="157.5"/>
-      <rect class="st1" x="167.4" y="866.5" width="689.2" height="78.8"/>
-      <rect class="st1" x="216.6" y="945.2" width="590.8" height="78.8"/>
+      <rect class="st1" x="215.35" y="550.15" width="593.3" height="81.3"/>
+      <rect class="st1" x="166.15" y="628.95" width="691.7" height="81.3"/>
+      <rect class="st1" x="166.15" y="707.65" width="101.0" height="160.0"/>
+      <rect class="st1" x="363.05" y="707.65" width="297.9" height="160.0"/>
+      <rect class="st1" x="756.95" y="707.65" width="101.0" height="160.0"/>
+      <rect class="st1" x="166.15" y="865.25" width="691.7" height="81.3"/>
+      <rect class="st1" x="215.35" y="943.95" width="593.3" height="81.3"/>
     </g>
     <g>
-      <rect class="st2" x="265.8" y="708.9" width="98.5" height="157.5"/>
-      <rect class="st2" x="659.7" y="708.9" width="98.5" height="157.5"/>
+      <rect class="st2" x="264.55" y="707.65" width="101.0" height="160.0"/>
+      <rect class="st2" x="658.45" y="707.65" width="101.0" height="160.0"/>
     </g>
   </g>
 </svg>
