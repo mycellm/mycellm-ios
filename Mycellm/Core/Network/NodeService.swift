@@ -15,6 +15,9 @@ final class NodeService: @unchecked Sendable {
     private(set) var isRunning = false
     private(set) var networkMode: NetworkMode = .public
 
+    // MARK: - Networks
+    let networkRegistry = NetworkRegistry()
+
     // MARK: - Models
     let modelManager = ModelManager()
     let modelDownloader = ModelDownloader()
