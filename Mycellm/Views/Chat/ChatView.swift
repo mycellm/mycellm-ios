@@ -30,9 +30,10 @@ struct ChatView: View {
         let role: String
         var content: String
         var tokenCount: Int
-        let routedVia: String
+        var routedVia: String
         let timestamp: Date
         var isStreaming: Bool = false
+        var isError: Bool = false
         var startTime: Date = Date()
         var endTime: Date?
         var tokensPerSecond: Double = 0
@@ -56,8 +57,15 @@ struct ChatView: View {
                     ScrollView {
                         LazyVStack(spacing: 12) {
                             ForEach(messages) { msg in
-                                MessageBubble(message: msg)
-                                    .id(msg.id)
+                                MessageBubble(message: msg) {
+                                    // Retry: resend the last user message
+                                    if let lastUser = messages.last(where: { $0.role == "user" }) {
+                                        messages.removeAll { $0.isError }
+                                        inputText = lastUser.content
+                                        sendMessage()
+                                    }
+                                }
+                                .id(msg.id)
                             }
                         }
                         .padding()
@@ -320,27 +328,58 @@ struct ChatView: View {
             } catch is CancellationError {
                 messages[responseIdx].endTime = Date()
                 messages[responseIdx].isStreaming = false
+            } catch is CancellationError {
+                messages[responseIdx].endTime = Date()
+                messages[responseIdx].isStreaming = false
             } catch {
                 let errMsg = error.localizedDescription
-                if messages[responseIdx].content.isEmpty {
-                    messages[responseIdx].content = errMsg
-                    messages[responseIdx].isStreaming = false
+                messages[responseIdx].isStreaming = false
+                messages[responseIdx].endTime = Date()
+
+                // Try local fallback if network fails and a model is loaded
+                if !node.modelManager.loadedModels.isEmpty {
+                    messages[responseIdx].content = ""
+                    messages[responseIdx].routedVia = "on-device"
+                    messages[responseIdx].isStreaming = true
+                    do {
+                        var tokenCount = 0
+                        let localMessages = chatMessages.map { ["role": $0.role, "content": $0.content] }
+                        let localStream = await node.modelManager.engine.stream(messages: localMessages)
+                        for try await chunk in localStream {
+                            messages[responseIdx].content += chunk
+                            tokenCount += 1
+                        }
+                        let endTime = Date()
+                        messages[responseIdx].tokenCount = tokenCount
+                        messages[responseIdx].endTime = endTime
+                        messages[responseIdx].tokensPerSecond = endTime.timeIntervalSince(messages[responseIdx].startTime) > 0
+                            ? Double(tokenCount) / endTime.timeIntervalSince(messages[responseIdx].startTime) : 0
+                        messages[responseIdx].isStreaming = false
+                    } catch {
+                        messages[responseIdx].content = "Network failed, local fallback also failed: \(error.localizedDescription)"
+                        messages[responseIdx].isError = true
+                        messages[responseIdx].isStreaming = false
+                    }
                 } else {
-                    // Had partial content, append error
-                    messages[responseIdx].content += "\n\n[Error: \(errMsg)]"
-                    messages[responseIdx].isStreaming = false
+                    if messages[responseIdx].content.isEmpty {
+                        messages[responseIdx].content = errMsg
+                    } else {
+                        messages[responseIdx].content += "\n\n[Error: \(errMsg)]"
+                    }
+                    messages[responseIdx].isError = true
                 }
             }
             isGenerating = false
         }
 
-        // Connection timeout — cancel if no response after 30s
+        // Connection timeout
         Task {
             try? await Task.sleep(for: .seconds(30))
             guard isGenerating,
                   messages.indices.contains(responseIdx),
                   messages[responseIdx].content.isEmpty else { return }
-            messages[responseIdx].content = "Connection timed out. Check your endpoint in Settings."
+            messages[responseIdx].content = "Connection timed out."
+            messages[responseIdx].isError = true
             messages[responseIdx].isStreaming = false
             stopGenerating()
         }
@@ -370,6 +409,7 @@ struct ChatView: View {
 
 struct MessageBubble: View {
     let message: ChatView.DisplayMessage
+    var onRetry: (() -> Void)? = nil
 
     var isUser: Bool { message.role == "user" }
     var isThinking: Bool { message.isStreaming && message.content.isEmpty }
@@ -440,10 +480,30 @@ struct MessageBubble: View {
                         }
                     }
                 }
+
+                // Retry button for errors
+                if message.isError, let onRetry {
+                    Button {
+                        onRetry()
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "arrow.clockwise")
+                                .font(.system(size: 10))
+                            Text("Retry")
+                                .font(.mono(10, weight: .medium))
+                        }
+                        .foregroundStyle(Color.relayBlue)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 4)
+                        .background(Color.relayBlue.opacity(0.15))
+                        .clipShape(Capsule())
+                    }
+                }
             }
             .padding(12)
-            .background(isUser ? Color.sporeGreen.opacity(0.15) : Color.cardBackground)
+            .background(isUser ? Color.sporeGreen.opacity(0.15) : message.isError ? Color.computeRed.opacity(0.08) : Color.cardBackground)
             .clipShape(RoundedRectangle(cornerRadius: 12))
+            .overlay(message.isError ? RoundedRectangle(cornerRadius: 12).stroke(Color.computeRed.opacity(0.2), lineWidth: 1) : nil)
 
             if !isUser { Spacer(minLength: 60) }
         }

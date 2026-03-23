@@ -240,6 +240,9 @@ struct DashboardView: View {
         case .modelLoaded: .sporeGreen
         case .modelUnloaded: .ledgerGold
         case .inferenceCompleted: .computeRed
+        case .httpServerStarted: .relayBlue
+        case .creditEarned: .ledgerGold
+        case .creditSpent: .ledgerGold
         case .peerConnected: .sporeGreen
         case .peerDisconnected: .consoleDim
         case .error: .computeRed

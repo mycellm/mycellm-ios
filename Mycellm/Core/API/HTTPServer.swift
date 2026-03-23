@@ -87,6 +87,13 @@ actor HTTPServer {
                     temperature: req.temperature ?? 0.7,
                     maxTokens: req.max_tokens ?? 2048
                 )
+
+                // Update node stats
+                let totalTokens = result.promptTokens + result.completionTokens
+                await MainActor.run {
+                    nodeService.recordHTTPInference(model: req.model, tokens: totalTokens)
+                }
+
                 let response: [String: Any] = [
                     "choices": [["message": ["role": "assistant", "content": result.text], "index": 0, "finish_reason": "stop"]],
                     "usage": ["prompt_tokens": result.promptTokens, "completion_tokens": result.completionTokens, "total_tokens": result.promptTokens + result.completionTokens],

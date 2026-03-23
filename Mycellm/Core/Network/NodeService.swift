@@ -36,7 +36,10 @@ final class NodeService: @unchecked Sendable {
 
     // MARK: - Stats
     private(set) var totalInferences: Int = 0
-    private(set) var connectedPeers: Int = 0
+    var connectedPeers: Int {
+        // Count peers from bootstrap connection status
+        bootstrapState == .connected ? 1 : 0
+    }
     var loadedModels: Int { modelManager.loadedModels.count }
     private(set) var creditBalance: Double = 0.0
 
@@ -213,6 +216,15 @@ final class NodeService: @unchecked Sendable {
     }
 
 
+    /// Record an inference served via HTTP (LAN relay).
+    func recordHTTPInference(model: String, tokens: Int) {
+        totalInferences += 1
+        let cost = Double(tokens) * 0.001
+        creditBalance += cost
+        addEvent(.inferenceCompleted(model: model, tokens: tokens))
+        addEvent(.creditEarned(cost, "HTTP client"))
+    }
+
     /// Periodically submit receipts to bootstrap for auditing.
     func flushReceipts() async {
         await creditLedger.submitPendingReceipts()
@@ -248,6 +260,9 @@ struct ActivityItem: Identifiable, Sendable {
         case modelLoaded(String)
         case modelUnloaded(String)
         case inferenceCompleted(model: String, tokens: Int)
+        case httpServerStarted(Int)
+        case creditEarned(Double, String)
+        case creditSpent(Double, String)
         case peerConnected(String)
         case peerDisconnected(String)
         case error(String)
@@ -261,6 +276,9 @@ struct ActivityItem: Identifiable, Sendable {
         case .modelLoaded: "arrow.down.circle.fill"
         case .modelUnloaded: "arrow.up.circle.fill"
         case .inferenceCompleted: "brain"
+        case .httpServerStarted: "antenna.radiowaves.left.and.right"
+        case .creditEarned: "plus.circle.fill"
+        case .creditSpent: "minus.circle.fill"
         case .peerConnected: "person.badge.plus"
         case .peerDisconnected: "person.badge.minus"
         case .error: "exclamationmark.triangle.fill"
@@ -274,7 +292,10 @@ struct ActivityItem: Identifiable, Sendable {
         case .networkModeChanged(let mode): "Switched to \(mode.displayName)"
         case .modelLoaded(let name): "Loaded \(name)"
         case .modelUnloaded(let name): "Unloaded \(name)"
-        case .inferenceCompleted(let model, let tokens): "\(model) — \(tokens) tokens"
+        case .inferenceCompleted(let model, let tokens): "Served \(tokens) tokens (\(model))"
+        case .httpServerStarted(let port): "HTTP API on :\(port)"
+        case .creditEarned(let amount, let from): String(format: "+%.3f credits from %@", amount, from)
+        case .creditSpent(let amount, let to): String(format: "-%.3f credits to %@", amount, to)
         case .peerConnected(let peer): "Connected: \(peer)"
         case .peerDisconnected(let peer): "Disconnected: \(peer)"
         case .error(let msg): msg
