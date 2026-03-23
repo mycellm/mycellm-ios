@@ -49,6 +49,17 @@ struct RootView: View {
                         // Submit pending receipts to bootstrap
                         Task { await node.flushReceipts() }
                     }
+                    .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in
+                        // Request background time to finish in-progress inference
+                        let taskId = UIApplication.shared.beginBackgroundTask {
+                            // Expiration handler — clean up
+                        }
+                        Task {
+                            // Give in-progress inference 25s to complete
+                            try? await Task.sleep(for: .seconds(25))
+                            UIApplication.shared.endBackgroundTask(taskId)
+                        }
+                    }
                     .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
                         applyKeepAwake(node: node)
                         lastInteraction = Date()
