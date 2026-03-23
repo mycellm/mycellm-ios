@@ -1,16 +1,17 @@
 import Foundation
 import Network
 
-/// QUIC transport using Network.framework.
-/// Wire format: raw CBOR per message (no length prefix), matching Python aioquic.
+/// QUIC transport: NWConnectionGroup for bidirectional multiplexed streams.
+/// Send: ContentContext(isFinal: true) per message (matches aioquic end_stream).
+/// Receive: newConnectionHandler for server-initiated streams.
 actor QUICTransport {
     static let alpn = "mycellm-v1"
     static let defaultPort: UInt16 = 8421
 
-    private var connection: NWConnection?
+    private var group: NWConnectionGroup?
+    private var mainConnection: NWConnection?
     private(set) var connected = false
     private var onMessage: ((MessageEnvelope) async -> MessageEnvelope?)?
-    private var receiveBuffer = Data()
 
     func setMessageHandler(_ handler: @escaping (MessageEnvelope) async -> MessageEnvelope?) {
         onMessage = handler
@@ -25,25 +26,31 @@ actor QUICTransport {
             { _, _, completion in completion(true) },
             .main
         )
+        quicOptions.idleTimeout = 120_000
 
-        let params = NWParameters(quic: quicOptions)
-        let endpoint = NWEndpoint.hostPort(
+        let descriptor = NWMultiplexGroup(to: .hostPort(
             host: NWEndpoint.Host(host),
             port: NWEndpoint.Port(rawValue: port)!
-        )
-        let conn = NWConnection(to: endpoint, using: params)
-        connection = conn
+        ))
+        let params = NWParameters(quic: quicOptions)
+        let grp = NWConnectionGroup(with: descriptor, using: params)
+        group = grp
+
+        // Handle server-initiated streams (pings, inference requests)
+        grp.newConnectionHandler = { [weak self] incomingStream in
+            print("[QUIC] New incoming stream")
+            Task { await self?.handleIncomingStream(incomingStream) }
+        }
 
         let resolver = ContinuationResolver<Void>()
 
-        conn.stateUpdateHandler = { [weak self] state in
-            print("[QUIC] Connection state: \(state)")
+        grp.stateUpdateHandler = { state in
+            print("[QUIC] Group state: \(state)")
             switch state {
             case .ready:
-                print("[QUIC] Connected to \(host):\(port)")
                 resolver.resumeIfNeeded(returning: ())
             case .failed(let error):
-                print("[QUIC] Connection failed: \(error)")
+                print("[QUIC] Group failed: \(error)")
                 resolver.resumeIfNeeded(throwing: MycellmError.transportError("QUIC: \(error)"))
             case .cancelled:
                 resolver.resumeIfNeeded(throwing: MycellmError.transportError("QUIC cancelled"))
@@ -51,123 +58,109 @@ actor QUICTransport {
                 break
             }
         }
-        conn.start(queue: .global(qos: .userInitiated))
+        grp.start(queue: .global(qos: .userInitiated))
 
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
             resolver.setContinuation(cont)
         }
 
         connected = true
-        // Start receiving
-        startReceiving()
+        print("[QUIC] Connected to \(host):\(port)")
     }
 
     func disconnect() {
-        connection?.cancel()
-        connection = nil
         connected = false
-        receiveBuffer = Data()
+        mainConnection?.cancel()
+        mainConnection = nil
+        group?.cancel()
+        group = nil
     }
 
     // MARK: - Send
 
-    /// Send a raw CBOR message. Uses the main QUIC connection.
-    /// The message is prefixed with a 4-byte length for framing (matches transport.quic framing).
+    /// Send a message by creating a new outbound stream from the group.
     func send(_ message: MessageEnvelope) async throws {
-        guard let conn = connection else {
+        guard let group else {
             throw MycellmError.transportError("Not connected")
         }
 
-        // Send raw CBOR (not framed) on a QUIC stream, then close the stream.
-        // This matches Python's send_message: new unidirectional stream, data, end_stream=True.
-        let cborData = message.toCBOR()  // raw CBOR with 0x00/0x01 prefix
+        let cborData = message.toCBOR()
         print("[QUIC] Sending \(cborData.count) bytes (type: \(message.type.rawValue))")
 
-        // Create a new stream context — each message gets its own QUIC stream
-        let streamContext = NWConnection.ContentContext(
-            identifier: "mycellm-\(message.id)",
-            isFinal: true  // This closes the stream after sending (end_stream=true)
-        )
+        // Create a new stream from the group
+        guard let stream = NWConnection(from: group) else {
+            throw MycellmError.transportError("Failed to create stream from group")
+        }
+
+        let resolver = ContinuationResolver<Void>()
+
+        stream.stateUpdateHandler = { state in
+            switch state {
+            case .ready:
+                // Stream is ready — send data and close
+                stream.send(content: cborData,
+                            contentContext: .finalMessage,
+                            isComplete: true,
+                            completion: .contentProcessed { error in
+                    if let error {
+                        print("[QUIC] Send error: \(error)")
+                        resolver.resumeIfNeeded(throwing: error)
+                    } else {
+                        print("[QUIC] Send OK: \(cborData.count) bytes")
+                        resolver.resumeIfNeeded(returning: ())
+                    }
+                })
+            case .failed(let error):
+                print("[QUIC] Stream failed: \(error)")
+                resolver.resumeIfNeeded(throwing: error)
+            default:
+                break
+            }
+        }
+        stream.start(queue: .global(qos: .userInitiated))
 
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
-            conn.send(content: cborData,
-                      contentContext: streamContext,
-                      isComplete: true,
-                      completion: .contentProcessed { error in
-                if let error {
-                    print("[QUIC] Send error: \(error)")
-                    cont.resume(throwing: error)
-                } else {
-                    print("[QUIC] Send success: \(cborData.count) bytes on stream \(streamContext.identifier)")
-                    cont.resume()
-                }
-            })
+            resolver.setContinuation(cont)
         }
     }
 
-    // MARK: - Receive
+    // MARK: - Receive (server-initiated streams)
 
-    private nonisolated func startReceiving() {
-        Task { await self.receiveLoop() }
+    private func handleIncomingStream(_ stream: NWConnection) {
+        stream.stateUpdateHandler = { [weak self] state in
+            if case .ready = state {
+                Task { await self?.readStream(stream) }
+            }
+        }
+        stream.start(queue: .global(qos: .userInitiated))
     }
 
-    private func receiveLoop() async {
-        guard let conn = connection else { return }
+    private func readStream(_ stream: NWConnection) async {
+        var buffer = Data()
 
-        while connected {
-            do {
-                let data: Data = try await withCheckedThrowingContinuation { cont in
-                    conn.receive(minimumIncompleteLength: 1, maximumLength: 65536) { data, _, isComplete, error in
-                        if let error {
-                            cont.resume(throwing: error)
-                        } else if let data {
-                            cont.resume(returning: data)
-                        } else if isComplete {
-                            cont.resume(throwing: MycellmError.transportError("Connection closed"))
-                        } else {
-                            cont.resume(returning: Data())
-                        }
-                    }
+        // Read all data until stream completes
+        while true {
+            let result: (Data?, Bool) = await withCheckedContinuation { cont in
+                stream.receive(minimumIncompleteLength: 1, maximumLength: 65536) { data, _, isComplete, _ in
+                    cont.resume(returning: (data, isComplete))
                 }
-
-                if data.isEmpty { continue }
-                receiveBuffer.append(data)
-
-                // Try to parse framed messages from buffer
-                while true {
-                    do {
-                        let (msg, remaining) = try MessageEnvelope.readFrame(receiveBuffer)
-                        guard let msg else { break } // incomplete frame
-                        receiveBuffer = remaining
-
-                        if let handler = onMessage {
-                            Task {
-                                if let response = await handler(msg) {
-                                    try? await self.send(response)
-                                }
-                            }
-                        }
-                    } catch {
-                        // Try parsing as raw CBOR (no length prefix)
-                        if let msg = try? MessageEnvelope.fromCBOR(receiveBuffer) {
-                            receiveBuffer = Data()
-                            if let handler = onMessage {
-                                Task {
-                                    if let response = await handler(msg) {
-                                        try? await self.send(response)
-                                    }
-                                }
-                            }
-                        }
-                        break
-                    }
-                }
-            } catch {
-                if connected {
-                    connected = false
-                }
-                break
             }
+            if let data = result.0 { buffer.append(data) }
+            if result.1 || buffer.count > 10 * 1024 * 1024 { break }
+        }
+
+        guard !buffer.isEmpty else { return }
+        print("[QUIC] Stream received \(buffer.count) bytes")
+
+        // Parse CBOR
+        guard let msg = try? MessageEnvelope.fromCBOR(buffer) else {
+            print("[QUIC] Failed to parse incoming message (\(buffer.count) bytes)")
+            return
+        }
+        print("[QUIC] Parsed: \(msg.type.rawValue) id=\(msg.id)")
+
+        if let handler = onMessage, let response = await handler(msg) {
+            try? await send(response)
         }
     }
 
