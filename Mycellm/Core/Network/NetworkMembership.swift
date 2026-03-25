@@ -133,10 +133,19 @@ final class NetworkRegistry: @unchecked Sendable {
         ledgers[networkId]
     }
 
-    /// Total credit balance across all networks.
-    var totalBalance: Double {
-        // Can't easily sum actor values synchronously — return cached
-        return 100.0 // TODO: async sum
+    /// Cached total balance — updated via refreshTotalBalance().
+    private(set) var cachedTotalBalance: Double = 100.0
+
+    /// Total credit balance across all networks (cached, call refreshTotalBalance() to update).
+    var totalBalance: Double { cachedTotalBalance }
+
+    /// Async sum of all network ledger balances.
+    func refreshTotalBalance() async {
+        var sum = 0.0
+        for (_, ledger) in ledgers {
+            sum += await ledger.balance
+        }
+        cachedTotalBalance = sum
     }
 
     /// Check if any fleet restricts joining external networks.

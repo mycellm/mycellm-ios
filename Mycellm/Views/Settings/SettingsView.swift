@@ -1,10 +1,12 @@
 import SwiftUI
+import StoreKit
 
 struct SettingsView: View {
     @Environment(NodeService.self) private var node
     @State private var preferences = Preferences.shared
     @State private var showingExportKey = false
     @State private var showingScreenSaver = false
+    @State private var tipJar = TipJarManager()
 
     var body: some View {
         NavigationStack {
@@ -237,6 +239,66 @@ struct SettingsView: View {
                     ))
                     .font(.mono(13))
                 }
+
+                // Tip Jar
+                Section(header: Text("Buy Me a Coffee"), footer: Text("mycellm is free and open source. Tips help support continued development.").font(.mono(10))) {
+                    if tipJar.isLoading {
+                        HStack {
+                            Spacer()
+                            ProgressView()
+                                .tint(Color.sporeGreen)
+                            Spacer()
+                        }
+                    } else if tipJar.products.isEmpty {
+                        // Show placeholder tiers when products haven't loaded
+                        ForEach(TipJarManager.tipTiers, id: \.id) { tier in
+                            HStack {
+                                Text(tier.emoji)
+                                Text(tier.label)
+                                    .font(.mono(13))
+                                    .foregroundStyle(Color.consoleText)
+                                Spacer()
+                                Text("—")
+                                    .font(.mono(12))
+                                    .foregroundStyle(Color.consoleDim)
+                            }
+                        }
+                    } else {
+                        ForEach(tipJar.products, id: \.id) { product in
+                            Button {
+                                Task { await tipJar.purchase(product) }
+                            } label: {
+                                HStack {
+                                    Text(tipJar.emoji(for: product.id))
+                                    Text(tipJar.label(for: product.id))
+                                        .font(.mono(13))
+                                        .foregroundStyle(Color.consoleText)
+                                    Spacer()
+                                    Text(product.displayPrice)
+                                        .font(.mono(12, weight: .medium))
+                                        .foregroundStyle(Color.sporeGreen)
+                                }
+                            }
+                            .disabled(tipJar.purchaseState == .purchasing)
+                        }
+                    }
+
+                    if case .success = tipJar.purchaseState {
+                        HStack {
+                            Image(systemName: "heart.fill")
+                                .foregroundStyle(Color.computeRed)
+                            Text("Thank you for your support!")
+                                .font(.mono(12))
+                                .foregroundStyle(Color.sporeGreen)
+                        }
+                    }
+                    if case .failed(let msg) = tipJar.purchaseState {
+                        Text(msg)
+                            .font(.mono(10))
+                            .foregroundStyle(Color.computeRed)
+                    }
+                }
+                .task { await tipJar.loadProducts() }
 
                 // About
                 Section("About") {

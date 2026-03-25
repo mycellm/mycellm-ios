@@ -28,6 +28,7 @@ struct ChatView: View {
     @State private var scanResult = SensitiveDataGuard.ScanResult(matches: [], action: .allow, highestSeverity: nil)
     @State private var showSensitiveAlert = false
     @State private var scanTask: Task<Void, Never>?
+    @AppStorage("chat_ai_disclaimer_dismissed") private var disclaimerDismissed = false
 
     struct DisplayMessage: Identifiable {
         let id = UUID()
@@ -89,6 +90,11 @@ struct ChatView: View {
 
                 Divider().background(Color.cardBorder)
 
+                // AI disclaimer
+                if !disclaimerDismissed {
+                    aiDisclaimer
+                }
+
                 // Input bar
                 inputBar
             }
@@ -109,6 +115,29 @@ struct ChatView: View {
     @Environment(\.horizontalSizeClass) private var sizeClass
 
     @State private var showEndpointDetail = false
+
+    // MARK: - AI Disclaimer
+
+    private var aiDisclaimer: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "info.circle")
+                .font(.system(size: 10))
+            Text("AI responses may be inaccurate. Verify important information.")
+                .font(.mono(9))
+            Spacer()
+            Button {
+                withAnimation { disclaimerDismissed = true }
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9))
+            }
+            .buttonStyle(.plain)
+        }
+        .foregroundStyle(Color.consoleDim)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 5)
+        .background(Color.cardBackground.opacity(0.8))
+    }
 
     // MARK: - Route Bar
 
@@ -294,7 +323,7 @@ struct ChatView: View {
             } label: {
                 Image(systemName: isGenerating ? "stop.circle.fill"
                     : scanResult.highestSeverity == .high ? "shield.fill"
-                    : "arrow.up.circle.fill")
+                    : "arrow.right.circle.fill")
                     .font(.system(size: 28))
                     .foregroundStyle(inputText.isEmpty && !isGenerating ? Color.consoleDim
                         : scanResult.highestSeverity == .high ? Color.computeRed
@@ -303,7 +332,8 @@ struct ChatView: View {
             .disabled(inputText.isEmpty && !isGenerating)
             }
             .padding(.horizontal, 16)
-            .padding(.vertical, 10)
+            .padding(.top, 10)
+            .padding(.bottom, 16)
             .background(Color.cardBackground)
             .overlay(alignment: .top) {
                 if scanResult.highestSeverity != nil {
@@ -346,7 +376,7 @@ struct ChatView: View {
         case .network:
             sendNetworkMessage()
         case .onDevice:
-            if node.modelManager.loadedModels.isEmpty {
+            if !node.hasLoadedModel {
                 messages.append(DisplayMessage(
                     role: "assistant",
                     content: node.modelManager.localFiles.isEmpty
@@ -376,7 +406,7 @@ struct ChatView: View {
         streamTask = Task {
             do {
                 var tokenCount = 0
-                let stream = await node.modelManager.engine.stream(
+                let stream = await node.streamLocalInference(
                     messages: Array(chatMessages)
                 )
                 for try await chunk in stream {
@@ -464,8 +494,7 @@ struct ChatView: View {
                 let totalTokens = result.promptTokens + result.completionTokens
                 let cost = Double(max(totalTokens, messages[responseIdx].tokenCount)) * 0.001
                 await MainActor.run {
-                    node.creditBalance -= cost
-                    node.totalInferences += 1
+                    node.debitCredit(amount: cost, network: "public")
                 }
             } catch is CancellationError {
                 messages[responseIdx].endTime = Date()
@@ -504,14 +533,14 @@ struct ChatView: View {
                 messages[responseIdx].endTime = Date()
 
                 // Try local fallback if network fails and a model is loaded
-                if !node.modelManager.loadedModels.isEmpty {
+                if node.hasLoadedModel {
                     messages[responseIdx].content = ""
                     messages[responseIdx].routedVia = "on-device"
                     messages[responseIdx].isStreaming = true
                     do {
                         var tokenCount = 0
                         let localMessages = chatMessages.map { ["role": $0.role, "content": $0.content] }
-                        let localStream = await node.modelManager.engine.stream(messages: localMessages)
+                        let localStream = await node.streamLocalInference(messages: localMessages)
                         for try await chunk in localStream {
                             messages[responseIdx].content += chunk
                             tokenCount += 1

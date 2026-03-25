@@ -29,6 +29,7 @@ final class NodeService: @unchecked Sendable {
     let creditLedger = CreditLedger()
     let natDiscovery = NATDiscovery()
     let receiptValidator = ReceiptValidator()
+    let fleetHandler = FleetHandler()
 
     // MARK: - Network Status
     private(set) var bootstrapState: BootstrapClient.ConnectionState = .disconnected
@@ -54,6 +55,7 @@ final class NodeService: @unchecked Sendable {
         networkMode = Preferences.shared.networkMode
         creditBalance = 100.0  // Seed balance for new nodes
         modelManager.scanLocalModels()
+        Task { await fleetHandler.setNodeService(self) }
     }
 
     private func loadOrCreateIdentity() {
@@ -236,6 +238,28 @@ final class NodeService: @unchecked Sendable {
     func setNetworkMode(_ mode: NetworkMode) {
         networkMode = mode
         addEvent(.networkModeChanged(mode))
+    }
+
+    // MARK: - Inference Facade
+
+    /// Stream inference from the local model. Views should use this instead of reaching into modelManager.engine directly.
+    func streamLocalInference(messages: [[String: String]]) -> AsyncThrowingStream<String, Error> {
+        return modelManager.engine.stream(messages: messages)
+    }
+
+    /// Non-streaming inference from local model.
+    func completeLocalInference(messages: [[String: String]], temperature: Double = 0.7, maxTokens: Int = 2048) async throws -> (text: String, promptTokens: Int, completionTokens: Int) {
+        return try await modelManager.engine.complete(messages: messages, temperature: temperature, maxTokens: maxTokens)
+    }
+
+    /// Whether the node has a model loaded and ready for local inference.
+    var hasLoadedModel: Bool { !modelManager.loadedModels.isEmpty }
+
+    /// Debit credit balance for network usage.
+    func debitCredit(amount: Double, network: String = "public") {
+        creditBalance -= amount
+        totalInferences += 1
+        addEvent(.creditSpent(amount, network))
     }
 
     // MARK: - Events

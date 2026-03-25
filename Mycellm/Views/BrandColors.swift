@@ -33,9 +33,16 @@ extension Color {
     static let cardBorder = Color(red: 0.15, green: 0.15, blue: 0.15)
 }
 
-/// Brand font helpers.
+/// Brand font helpers — JetBrains Mono to match web dashboard.
 extension Font {
     static func mono(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
-        .system(size: size, weight: weight, design: .monospaced)
+        let name: String
+        switch weight {
+        case .bold: name = "JetBrainsMono-Bold"
+        case .semibold: name = "JetBrainsMono-SemiBold"
+        case .medium: name = "JetBrainsMono-Medium"
+        default: name = "JetBrainsMono-Regular"
+        }
+        return Font.custom(name, size: size)
     }
 }

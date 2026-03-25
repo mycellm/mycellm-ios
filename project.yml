@@ -34,10 +34,13 @@ targets:
       - path: Mycellm
         excludes:
           - Tests/**
+    resources:
+      - path: Mycellm/Resources/Fonts
+        buildPhase: resources
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.mycellm.app
-        CODE_SIGN_ENTITLEMENTS: Mycellm/Mycellm.entitlements
+        # CODE_SIGN_ENTITLEMENTS: Mycellm/Mycellm.entitlements  # deferred — needs provisioning profile
         GENERATE_INFOPLIST_FILE: true
         INFOPLIST_FILE: Mycellm/Info.plist
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
