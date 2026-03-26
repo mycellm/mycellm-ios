@@ -23,6 +23,8 @@
 		<string>_mycellm._tcp</string>
 		<string>_mycellm._udp</string>
 	</array>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<true/>
 	<key>UISupportedInterfaceOrientations</key>
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>
