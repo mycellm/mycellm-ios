@@ -3,7 +3,7 @@ import Network
 
 /// Bootstrap connection: QUIC preferred (bidirectional streams), HTTP+WS fallback.
 actor BootstrapClient {
-    static let defaultBootstrap = "bootstrap.mycellm.dev"
+    static let defaultBootstrap = NetworkConfig.bootstrapHost
     static let defaultPort: UInt16 = 8421
     static let quicRetryBeforeFallback = 2
     static let retryDelays: [TimeInterval] = [2, 5, 15, 30, 60]
@@ -32,7 +32,7 @@ actor BootstrapClient {
 
     private var bootstrapHost: String = defaultBootstrap
     private var bootstrapPort: UInt16 = defaultPort
-    private var httpEndpoint: String = "https://api.mycellm.dev"
+    private var httpEndpoint: String = NetworkConfig.apiBase
     private var quicTransport: QUICTransport?
     private var retryTask: Task<Void, Never>?
     private var quicRetryTask: Task<Void, Never>?
@@ -48,8 +48,8 @@ actor BootstrapClient {
         bootstrapHost = host
         bootstrapPort = port
         httpEndpoint = host == Self.defaultBootstrap
-            ? "https://api.mycellm.dev"
-            : "http://\(host):8420"
+            ? NetworkConfig.apiBase
+            : "http://\(host):\(NetworkConfig.httpPort)"
     }
 
     func setStateHandler(_ handler: @escaping @Sendable (ConnectionState, Transport, String?) -> Void) {

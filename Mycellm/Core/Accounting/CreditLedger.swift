@@ -9,7 +9,7 @@ actor CreditLedger {
     private(set) var totalSpent: Double = 0.0
     private var transactions: [Transaction] = []
     private var pendingReceipts: [SignedReceipt] = []
-    private var bootstrapEndpoint: String = "https://api.mycellm.dev"
+    private var bootstrapEndpoint: String = NetworkConfig.apiBase
 
     struct Transaction: Sendable {
         let counterparty: String

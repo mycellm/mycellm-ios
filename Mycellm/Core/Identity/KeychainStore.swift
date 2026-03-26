@@ -4,11 +4,13 @@ import CryptoKit
 
 /// Secure persistence for Ed25519 keys in the iOS Keychain.
 enum KeychainStore {
-    private static let serviceName = "com.mycellm.keys"
+    private static let serviceName = "\(NetworkConfig.keychainPrefix).keys"
 
     enum KeyTag: String {
         case accountPrivate = "com.mycellm.account.private"
         case devicePrivate = "com.mycellm.device.private"
+        // Note: raw values are fixed strings (Keychain identifiers can't change after first use
+        // or existing keys become inaccessible). Forks should update these before first launch.
     }
 
     // MARK: - Save

@@ -47,9 +47,9 @@ struct NetworkMembership: Identifiable, Codable, Sendable {
     /// HTTP API base URL for this network's bootstrap.
     var httpEndpoint: String {
         if bootstrapHost == BootstrapClient.defaultBootstrap {
-            return "https://api.mycellm.dev"
+            return NetworkConfig.apiBase
         }
-        return "http://\(bootstrapHost):8420"
+        return "http://\(bootstrapHost):\(NetworkConfig.httpPort)"
     }
 
     /// The public mycellm network (default membership).

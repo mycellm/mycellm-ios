@@ -66,7 +66,7 @@ final class Preferences: @unchecked Sendable {
     // MARK: - Remote Endpoint
 
     var remoteEndpoint: String {
-        get { defaults.string(forKey: "remote_endpoint") ?? "https://api.mycellm.dev/v1/public" }
+        get { defaults.string(forKey: "remote_endpoint") ?? NetworkConfig.publicGateway }
         set { defaults.set(newValue, forKey: "remote_endpoint") }
     }
 

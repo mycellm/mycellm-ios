@@ -398,13 +398,13 @@ struct SettingsView: View {
         Section {
             VStack(spacing: 16) {
                 HStack(spacing: 16) {
-                    Link("Privacy Policy", destination: URL(string: "https://mycellm.ai/privacy/")!)
+                    Link("Privacy Policy", destination: URL(string: NetworkConfig.privacyURL)!)
                         .font(.mono(12))
                         .foregroundStyle(Color.relayBlue)
                     Text("|")
                         .font(.mono(12))
                         .foregroundStyle(Color.consoleDim)
-                    Link("Terms of Service", destination: URL(string: "https://mycellm.ai/terms/")!)
+                    Link("Terms of Service", destination: URL(string: NetworkConfig.termsURL)!)
                         .font(.mono(12))
                         .foregroundStyle(Color.relayBlue)
                 }
