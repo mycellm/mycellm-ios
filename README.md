@@ -5,8 +5,8 @@
 <h1 align="center">mycellm_ iOS</h1>
 
 <p align="center">
-  <strong>Your iPad is a first-class inference node.</strong><br>
-  <em>Native iOS app for the mycellm distributed LLM network.</em>
+  <strong>The only distributed inference app for iOS.</strong><br>
+  <em>Your iPad is a peer, not just a client. Serve models. Earn credits. Chat privately.</em>
 </p>
 
 <p align="center">
@@ -26,14 +26,14 @@
 
 ## What is this?
 
-The mycellm iOS app turns any iPhone or iPad into a node on the [mycellm](https://github.com/mycellm/mycellm) distributed inference network. An iPad Pro with an M-series chip can serve 3B+ models at 30+ tokens/sec — competitive with many cloud instances.
+The mycellm iOS app turns any iPhone or iPad into a full peer on the [mycellm](https://github.com/mycellm/mycellm) distributed inference network — not just a client, but a node that serves inference to others. An iPad Pro with an M-series chip runs 3B+ models at 30+ tokens/sec on Metal. No other distributed inference project has a native mobile app.
 
-- **On-device inference** — llama.cpp on Metal, streaming tokens
-- **Network chat** — route to any model on the public network
-- **QUIC P2P** — authenticated with the bootstrap, serves inference to peers
-- **Sensitive Data Guard** — auto-routes sensitive prompts to local model
-- **OpenAI-compatible API** — serves `/v1/chat/completions` on your LAN
-- **Credit economy** — earn credits by seeding, spend them consuming
+- **On-device inference** — llama.cpp on Metal, streaming tokens with thermal throttling
+- **Network + local routing** — toggle per message, automatic fallback if network fails
+- **Sensitive Data Guard** — auto-scans prompts for PII and redirects to local model before sensitive data leaves your device
+- **Chat persistence** — threaded conversations with metadata (model, node, tokens/sec, route). Export, share, and private ephemeral sessions.
+- **Credit economy** — earn credits by seeding, spend them consuming. Signed receipts, no blockchain.
+- **OpenAI-compatible API** — your device serves `/v1/chat/completions` on your LAN for other tools
 
 ## Requirements
 

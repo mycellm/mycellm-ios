@@ -7,12 +7,18 @@ final class ModelDownloader: NSObject, @unchecked Sendable, URLSessionDownloadDe
     private(set) var activeDownloads: [Download] = []
     private var tasks: [Int: UUID] = [:]  // taskIdentifier → download ID
     private var session: URLSession!
+    private let delegateQueue: OperationQueue
+    private var lastProgressUpdate = Date.distantPast
 
     override init() {
+        let queue = OperationQueue()
+        queue.maxConcurrentOperationCount = 1
+        queue.name = "com.mycellm.downloader"
+        self.delegateQueue = queue
         super.init()
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForResource = 3600
-        session = URLSession(configuration: config, delegate: self, delegateQueue: .main)
+        session = URLSession(configuration: config, delegate: self, delegateQueue: queue)
     }
 
     struct Download: Identifiable {
@@ -87,21 +93,29 @@ final class ModelDownloader: NSObject, @unchecked Sendable, URLSessionDownloadDe
         activeDownloads.removeAll { $0.id == id }
     }
 
-    // MARK: - URLSessionDownloadDelegate
+    // MARK: - URLSessionDownloadDelegate (runs on background delegateQueue)
 
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64, totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
+        // Throttle UI updates to ~4 Hz to avoid hammering @Observable
+        let now = Date()
+        guard now.timeIntervalSince(lastProgressUpdate) > 0.25 else { return }
+        lastProgressUpdate = now
+
         guard let dlId = tasks[downloadTask.taskIdentifier],
               let idx = activeDownloads.firstIndex(where: { $0.id == dlId }) else { return }
 
-        let elapsed = max(1, Date().timeIntervalSince(activeDownloads[idx].startTime))
+        let elapsed = max(1, now.timeIntervalSince(activeDownloads[idx].startTime))
         let speed = Int64(Double(totalBytesWritten) / elapsed)
 
-        activeDownloads[idx].bytesDownloaded = totalBytesWritten
-        activeDownloads[idx].totalBytes = totalBytesExpectedToWrite > 0 ? totalBytesExpectedToWrite : 0
-        activeDownloads[idx].progress = totalBytesExpectedToWrite > 0
-            ? Double(totalBytesWritten) / Double(totalBytesExpectedToWrite)
-            : 0
-        activeDownloads[idx].bytesPerSecond = speed
+        DispatchQueue.main.async { [self] in
+            guard let idx = activeDownloads.firstIndex(where: { $0.id == dlId }) else { return }
+            activeDownloads[idx].bytesDownloaded = totalBytesWritten
+            activeDownloads[idx].totalBytes = totalBytesExpectedToWrite > 0 ? totalBytesExpectedToWrite : 0
+            activeDownloads[idx].progress = totalBytesExpectedToWrite > 0
+                ? Double(totalBytesWritten) / Double(totalBytesExpectedToWrite)
+                : 0
+            activeDownloads[idx].bytesPerSecond = speed
+        }
     }
 
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
@@ -111,7 +125,10 @@ final class ModelDownloader: NSObject, @unchecked Sendable, URLSessionDownloadDe
         // Check HTTP status
         if let httpResponse = downloadTask.response as? HTTPURLResponse,
            httpResponse.statusCode != 200 {
-            activeDownloads[idx].state = .failed
+            DispatchQueue.main.async { [self] in
+                guard let idx = activeDownloads.firstIndex(where: { $0.id == dlId }) else { return }
+                activeDownloads[idx].state = .failed
+            }
             tasks.removeValue(forKey: downloadTask.taskIdentifier)
             return
         }
@@ -129,7 +146,10 @@ final class ModelDownloader: NSObject, @unchecked Sendable, URLSessionDownloadDe
                 fh.closeFile()
                 guard magic == Data([0x47, 0x47, 0x55, 0x46]) else {
                     try? FileManager.default.removeItem(at: destination)
-                    activeDownloads[idx].state = .failed
+                    DispatchQueue.main.async { [self] in
+                        guard let idx = activeDownloads.firstIndex(where: { $0.id == dlId }) else { return }
+                        activeDownloads[idx].state = .failed
+                    }
                     tasks.removeValue(forKey: downloadTask.taskIdentifier)
                     return
                 }
@@ -141,10 +161,16 @@ final class ModelDownloader: NSObject, @unchecked Sendable, URLSessionDownloadDe
             resourceValues.isExcludedFromBackup = true
             try destURL.setResourceValues(resourceValues)
 
-            activeDownloads[idx].state = .completed
-            activeDownloads[idx].progress = 1.0
+            DispatchQueue.main.async { [self] in
+                guard let idx = activeDownloads.firstIndex(where: { $0.id == dlId }) else { return }
+                activeDownloads[idx].state = .completed
+                activeDownloads[idx].progress = 1.0
+            }
         } catch {
-            activeDownloads[idx].state = .failed
+            DispatchQueue.main.async { [self] in
+                guard let idx = activeDownloads.firstIndex(where: { $0.id == dlId }) else { return }
+                activeDownloads[idx].state = .failed
+            }
         }
 
         tasks.removeValue(forKey: downloadTask.taskIdentifier)
@@ -152,13 +178,12 @@ final class ModelDownloader: NSObject, @unchecked Sendable, URLSessionDownloadDe
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         guard let error = error,
-              let dlId = tasks[task.taskIdentifier],
-              let idx = activeDownloads.firstIndex(where: { $0.id == dlId }) else { return }
+              let dlId = tasks[task.taskIdentifier] else { return }
 
-        if (error as NSError).code == NSURLErrorCancelled {
-            activeDownloads[idx].state = .cancelled
-        } else {
-            activeDownloads[idx].state = .failed
+        let isCancelled = (error as NSError).code == NSURLErrorCancelled
+        DispatchQueue.main.async { [self] in
+            guard let idx = activeDownloads.firstIndex(where: { $0.id == dlId }) else { return }
+            activeDownloads[idx].state = isCancelled ? .cancelled : .failed
         }
         tasks.removeValue(forKey: task.taskIdentifier)
     }

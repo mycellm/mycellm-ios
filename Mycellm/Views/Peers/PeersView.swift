@@ -96,11 +96,11 @@ struct PeersView: View {
                         Circle()
                             .fill(bootstrapDotColor)
                             .frame(width: 6, height: 6)
-                        Text(node.bootstrapState.rawValue)
+                        Text(node.connection.bootstrapState.rawValue)
                             .font(.mono(9))
                             .foregroundStyle(Color.consoleDim)
-                        if node.bootstrapTransport != .none {
-                            Text(node.bootstrapTransport.rawValue)
+                        if node.connection.bootstrapTransport != .none {
+                            Text(node.connection.bootstrapTransport.rawValue)
                                 .font(.mono(8))
                                 .foregroundStyle(Color.consoleDim)
                                 .padding(.horizontal, 4)
@@ -174,7 +174,7 @@ struct PeersView: View {
                     .font(.system(size: 10))
                     .foregroundStyle(Color.ledgerGold)
                 if membership.id == "public" {
-                    Text(String(format: "%.1f credits", node.creditBalance))
+                    Text(String(format: "%.1f credits", node.stats.creditBalance))
                         .font(.mono(10))
                         .foregroundStyle(Color.ledgerGold)
                 } else {
@@ -183,13 +183,13 @@ struct PeersView: View {
                         .foregroundStyle(Color.ledgerGold)
                 }
                 Spacer()
-                Text("\(node.totalInferences) inferences")
+                Text("\(node.stats.totalInferences) inferences")
                     .font(.mono(9))
                     .foregroundStyle(Color.consoleDim)
             }
 
             // Error
-            if membership.id == "public", let error = node.bootstrapError {
+            if membership.id == "public", let error = node.connection.bootstrapError {
                 Text(error)
                     .font(.mono(9))
                     .foregroundStyle(Color.computeRed)
@@ -224,7 +224,7 @@ struct PeersView: View {
     }
 
     private var bootstrapDotColor: Color {
-        switch node.bootstrapState {
+        switch node.connection.bootstrapState {
         case .connected: .sporeGreen
         case .connecting, .handshaking, .reconnecting: .ledgerGold
         case .fallbackHTTP: .relayBlue

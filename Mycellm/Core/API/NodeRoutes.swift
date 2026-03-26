@@ -9,10 +9,10 @@ enum NodeRoutes {
             "node_name": node.nodeName,
             "running": node.isRunning,
             "network_mode": node.networkMode.rawValue,
-            "connected_peers": node.connectedPeers,
+            "connected_peers": node.connection.connectedPeers,
             "loaded_models": node.loadedModels,
-            "total_inferences": node.totalInferences,
-            "credit_balance": node.creditBalance,
+            "total_inferences": node.stats.totalInferences,
+            "credit_balance": node.stats.creditBalance,
         ]
     }
 

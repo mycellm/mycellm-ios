@@ -36,12 +36,16 @@ final class StoredModel {
 /// A chat message in a session.
 @Model
 final class ChatMessage {
-    var role: String = "user"   // "user", "assistant", "system"
+    var role: String = "user"
     var content: String = ""
     var timestamp: Date = Date()
     var tokenCount: Int = 0
     var model: String = ""
-    var routedVia: String = "local"  // "local", peer ID, "fleet"
+    var routedVia: String = "local"
+    var sourceNode: String = ""
+    var tokensPerSecond: Double = 0
+    var durationMs: Int = 0
+    var isError: Bool = false
     var session: ChatSession?
 
     init(role: String, content: String, model: String = "", routedVia: String = "local") {
@@ -53,7 +57,7 @@ final class ChatMessage {
     }
 }
 
-/// A chat session (conversation).
+/// A chat session (conversation thread).
 @Model
 final class ChatSession {
     var title: String = "New Chat"
@@ -68,6 +72,14 @@ final class ChatSession {
         self.model = model
         self.createdAt = Date()
         self.updatedAt = Date()
+    }
+
+    /// Generate a title from the first user message.
+    func autoTitle() {
+        guard title == "New Chat",
+              let first = messages.first(where: { $0.role == "user" }) else { return }
+        let text = first.content
+        title = text.count > 40 ? String(text.prefix(37)) + "…" : text
     }
 }
 

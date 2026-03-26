@@ -105,6 +105,18 @@ final class Preferences: @unchecked Sendable {
         set { defaults.set(newValue, forKey: "screen_saver_delay") }
     }
 
+    // MARK: - Chat State
+
+    var chatRoute: String {
+        get { defaults.string(forKey: "chat_route") ?? "Network" }
+        set { defaults.set(newValue, forKey: "chat_route") }
+    }
+
+    var lastSessionId: String? {
+        get { defaults.string(forKey: "last_session_id") }
+        set { defaults.set(newValue, forKey: "last_session_id") }
+    }
+
     // MARK: - Telemetry
 
     var telemetryEnabled: Bool {

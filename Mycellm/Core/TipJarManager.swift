@@ -14,6 +14,11 @@ final class TipJarManager: @unchecked Sendable {
         case purchasing
         case success
         case failed(String)
+
+        var isPurchasing: Bool {
+            if case .purchasing = self { return true }
+            return false
+        }
     }
 
     /// Product identifiers — configured in App Store Connect.

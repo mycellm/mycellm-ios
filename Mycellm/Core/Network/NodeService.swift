@@ -1,7 +1,41 @@
 import Foundation
 import Observation
 
-/// Main node actor — composes identity, inference, transport, and API layers.
+// MARK: - Stats (high-frequency changes — only Dashboard/Peers observe)
+
+@Observable
+final class NodeStats: @unchecked Sendable {
+    var totalInferences: Int = 0
+    var creditBalance: Double = 0.0
+    private(set) var recentEvents: [ActivityItem] = []
+
+    func addEvent(_ kind: ActivityItem.Kind) {
+        let item = ActivityItem(kind: kind)
+        recentEvents.insert(item, at: 0)
+        if recentEvents.count > 100 {
+            recentEvents.removeLast()
+        }
+    }
+}
+
+// MARK: - Connection (changes on connect/disconnect — Dashboard/Peers observe)
+
+@Observable
+final class NodeConnection: @unchecked Sendable {
+    var bootstrapState: BootstrapClient.ConnectionState = .disconnected
+    var bootstrapTransport: BootstrapClient.Transport = .none
+    var bootstrapError: String?
+
+    var connectedPeers: Int {
+        bootstrapState == .connected ? 1 : 0
+    }
+}
+
+// MARK: - Main Node Service
+
+/// Main node — composes identity, inference, transport, and API layers.
+/// Split into NodeService (stable) + NodeStats (frequent) + NodeConnection (occasional)
+/// so views only re-render when their specific data changes.
 @Observable
 final class NodeService: @unchecked Sendable {
     // MARK: - Identity
@@ -14,6 +48,10 @@ final class NodeService: @unchecked Sendable {
     // MARK: - State
     private(set) var isRunning = false
     private(set) var networkMode: NetworkMode = .public
+
+    // MARK: - Sub-observables
+    let stats = NodeStats()
+    let connection = NodeConnection()
 
     // MARK: - Networks
     let networkRegistry = NetworkRegistry()
@@ -31,21 +69,8 @@ final class NodeService: @unchecked Sendable {
     let receiptValidator = ReceiptValidator()
     let fleetHandler = FleetHandler()
 
-    // MARK: - Network Status
-    private(set) var bootstrapState: BootstrapClient.ConnectionState = .disconnected
-    private(set) var bootstrapTransport: BootstrapClient.Transport = .none
-    private(set) var bootstrapError: String?
-
-    // MARK: - Stats
-    var totalInferences: Int = 0
-    var connectedPeers: Int {
-        bootstrapState == .connected ? 1 : 0
-    }
+    // MARK: - Computed (delegate to sub-observables)
     var loadedModels: Int { modelManager.loadedModels.count }
-    var creditBalance: Double = 0.0
-
-    // MARK: - Activity
-    private(set) var recentEvents: [ActivityItem] = []
 
     // MARK: - Initialization
 
@@ -53,19 +78,17 @@ final class NodeService: @unchecked Sendable {
     init() {
         loadOrCreateIdentity()
         networkMode = Preferences.shared.networkMode
-        creditBalance = 100.0  // Seed balance for new nodes
+        stats.creditBalance = 100.0
         modelManager.scanLocalModels()
         Task { await fleetHandler.setNodeService(self) }
     }
 
     private func loadOrCreateIdentity() {
-        // Try loading existing keys from Keychain
         if let ak = KeychainStore.loadAccountKey(),
            let dk = KeychainStore.loadDeviceKey() {
             accountKey = ak
             deviceKey = dk
         } else {
-            // Generate new identity
             let ak = AccountKey.generate()
             let dk = DeviceKey.generate()
             try? KeychainStore.saveAccountKey(ak)
@@ -78,7 +101,6 @@ final class NodeService: @unchecked Sendable {
             peerId = PeerId.from(publicKey: dk.publicKey)
         }
 
-        // Create device certificate
         if let ak = accountKey, let dk = deviceKey {
             deviceCert = try? DeviceCert.create(
                 accountKey: ak,
@@ -94,49 +116,46 @@ final class NodeService: @unchecked Sendable {
     func start() async {
         guard !isRunning else { return }
         isRunning = true
-        addEvent(.nodeStarted)
+        stats.addEvent(.nodeStarted)
 
         let prefs = await MainActor.run { Preferences.shared }
 
-        // Start HTTP server if enabled
         if prefs.httpServerEnabled || networkMode.apiServerEnabled {
             do {
                 try await httpServer.start(port: prefs.apiPort, nodeService: self)
-                addEvent(.nodeStarted)
+                stats.addEvent(.httpServerStarted(prefs.apiPort))
             } catch {
-                addEvent(.error("HTTP server failed: \(error.localizedDescription)"))
+                stats.addEvent(.error("HTTP server failed: \(error.localizedDescription)"))
             }
         }
 
         modelManager.scanLocalModels()
 
-        // Start NAT discovery (background, non-blocking)
         Task { await natDiscovery.start() }
 
-        // Connect to bootstrap if network mode requires it
         if networkMode.usesBootstrap {
             await bootstrapClient.configure(
                 host: prefs.bootstrapHost,
                 port: UInt16(prefs.quicPort)
             )
 
-            // Track state changes for UI
-            let nodeRef = self
+            let weakConn = Weak(self.connection)
+            let weakStats = Weak(self.stats)
             await bootstrapClient.setStateHandler { @Sendable state, transport, error in
                 Task { @MainActor in
-                    let prev = nodeRef.bootstrapState
-                    nodeRef.bootstrapState = state
-                    nodeRef.bootstrapTransport = transport
-                    nodeRef.bootstrapError = error
-                    // Only log meaningful transitions (avoid spam)
+                    guard let conn = weakConn.value, let stats = weakStats.value else { return }
+                    let prev = conn.bootstrapState
+                    conn.bootstrapState = state
+                    conn.bootstrapTransport = transport
+                    conn.bootstrapError = error
                     if state != prev {
                         switch state {
                         case .connected:
-                            nodeRef.addEvent(.peerConnected("bootstrap via \(transport.rawValue)"))
+                            stats.addEvent(.peerConnected("bootstrap via \(transport.rawValue)"))
                         case .failed where prev != .failed:
-                            nodeRef.addEvent(.error("Bootstrap: \(error ?? "connection failed")"))
+                            stats.addEvent(.error("Bootstrap: \(error ?? "connection failed")"))
                         case .fallbackHTTP where prev != .fallbackHTTP:
-                            nodeRef.addEvent(.error("QUIC unavailable — trying HTTP"))
+                            stats.addEvent(.error("QUIC unavailable — trying HTTP"))
                         default:
                             break
                         }
@@ -153,12 +172,12 @@ final class NodeService: @unchecked Sendable {
                 version: "0.1.0"
             )
 
-            // Handle inference requests relayed from bootstrap
-            await bootstrapClient.setInferenceHandler { [weak self] envelope in
-                return await self?.handleRelayedInference(envelope)
+            let weakSelf = Weak(self)
+            await bootstrapClient.setInferenceHandler { @Sendable envelope in
+                return await weakSelf.value?.handleRelayedInference(envelope)
             }
 
-            addEvent(.networkModeChanged(networkMode))
+            stats.addEvent(.networkModeChanged(networkMode))
             await bootstrapClient.connect(peerId: peerId, capabilities: caps, deviceKey: deviceKey, deviceCert: deviceCert)
         }
     }
@@ -167,11 +186,11 @@ final class NodeService: @unchecked Sendable {
         guard isRunning else { return }
         await httpServer.stop()
         await bootstrapClient.disconnect()
-        bootstrapState = .disconnected
-        bootstrapTransport = .none
-        bootstrapError = nil
+        connection.bootstrapState = .disconnected
+        connection.bootstrapTransport = .none
+        connection.bootstrapError = nil
         isRunning = false
-        addEvent(.nodeStopped)
+        stats.addEvent(.nodeStopped)
     }
 
     // MARK: - Relayed Inference (from bootstrap)
@@ -192,11 +211,10 @@ final class NodeService: @unchecked Sendable {
             let result = try await modelManager.engine.complete(
                 messages: messages, temperature: temp, maxTokens: maxTok
             )
-            totalInferences += 1
+            stats.totalInferences += 1
             let totalTokens = result.promptTokens + result.completionTokens
-            addEvent(.inferenceCompleted(model: model, tokens: totalTokens))
+            stats.addEvent(.inferenceCompleted(model: model, tokens: totalTokens))
 
-            // Generate credit receipt
             let cost = Double(totalTokens) * 0.001
             if let dk = deviceKey {
                 let _ = try? await creditLedger.earn(
@@ -205,7 +223,7 @@ final class NodeService: @unchecked Sendable {
                     tokens: totalTokens, requestId: envelope.id,
                     deviceKey: dk
                 )
-                creditBalance = await creditLedger.balance
+                stats.creditBalance = await creditLedger.balance
             }
 
             return MessageBuilders.inferenceResponse(
@@ -220,14 +238,13 @@ final class NodeService: @unchecked Sendable {
         }
     }
 
-
     /// Record an inference served via HTTP (LAN relay).
     func recordHTTPInference(model: String, tokens: Int, clientIP: String = "LAN") {
-        totalInferences += 1
+        stats.totalInferences += 1
         let cost = Double(tokens) * 0.001
-        creditBalance += cost
-        addEvent(.inferenceCompleted(model: model, tokens: tokens))
-        addEvent(.creditEarned(cost, clientIP))
+        stats.creditBalance += cost
+        stats.addEvent(.inferenceCompleted(model: model, tokens: tokens))
+        stats.addEvent(.creditEarned(cost, clientIP))
     }
 
     /// Periodically submit receipts to bootstrap for auditing.
@@ -237,39 +254,30 @@ final class NodeService: @unchecked Sendable {
 
     func setNetworkMode(_ mode: NetworkMode) {
         networkMode = mode
-        addEvent(.networkModeChanged(mode))
+        stats.addEvent(.networkModeChanged(mode))
     }
 
     // MARK: - Inference Facade
 
-    /// Stream inference from the local model. Views should use this instead of reaching into modelManager.engine directly.
-    func streamLocalInference(messages: [[String: String]]) -> AsyncThrowingStream<String, Error> {
-        return modelManager.engine.stream(messages: messages)
+    func streamLocalInference(messages: [[String: String]]) async -> AsyncThrowingStream<String, Error> {
+        return await modelManager.engine.stream(messages: messages)
     }
 
-    /// Non-streaming inference from local model.
     func completeLocalInference(messages: [[String: String]], temperature: Double = 0.7, maxTokens: Int = 2048) async throws -> (text: String, promptTokens: Int, completionTokens: Int) {
         return try await modelManager.engine.complete(messages: messages, temperature: temperature, maxTokens: maxTokens)
     }
 
-    /// Whether the node has a model loaded and ready for local inference.
     var hasLoadedModel: Bool { !modelManager.loadedModels.isEmpty }
+
+    func resetInferenceContext() async {
+        try? await modelManager.engine.resetContext()
+    }
 
     /// Debit credit balance for network usage.
     func debitCredit(amount: Double, network: String = "public") {
-        creditBalance -= amount
-        totalInferences += 1
-        addEvent(.creditSpent(amount, network))
-    }
-
-    // MARK: - Events
-
-    private func addEvent(_ kind: ActivityItem.Kind) {
-        let item = ActivityItem(kind: kind)
-        recentEvents.insert(item, at: 0)
-        if recentEvents.count > 100 {
-            recentEvents.removeLast()
-        }
+        stats.creditBalance -= amount
+        stats.totalInferences += 1
+        stats.addEvent(.creditSpent(amount, network))
     }
 }
 
@@ -336,6 +344,13 @@ struct ActivityItem: Identifiable, Sendable {
         if seconds < 3600 { return "\(seconds / 60)m ago" }
         return "\(seconds / 3600)h ago"
     }
+}
+
+// MARK: - Weak Reference Wrapper (for @Sendable closures)
+
+private final class Weak<T: AnyObject>: @unchecked Sendable {
+    weak var value: T?
+    init(_ value: T) { self.value = value }
 }
 
 // MARK: - Node Name Generator

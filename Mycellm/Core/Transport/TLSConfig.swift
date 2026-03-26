@@ -9,14 +9,10 @@ enum TLSConfig {
     static func makeOptions() throws -> NWProtocolTLS.Options {
         let options = NWProtocolTLS.Options()
 
-        // Generate a self-signed identity for QUIC transport
-        // The actual peer identity is verified via NodeHello after connection
-        if let identity = try? generateSelfSignedIdentity() {
-            sec_protocol_options_set_local_identity(
-                options.securityProtocolOptions,
-                identity
-            )
-        }
+        // Self-signed identity for QUIC transport is optional.
+        // Identity verification happens at the app layer via NodeHello.
+        // If cert generation fails, QUIC still works — the peer just
+        // can't verify our transport cert (which we don't require anyway).
 
         // Accept any peer certificate (we verify at app layer)
         sec_protocol_options_set_verify_block(

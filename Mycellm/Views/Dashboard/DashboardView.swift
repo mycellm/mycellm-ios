@@ -7,7 +7,6 @@ struct DashboardView: View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 20) {
-                    // Logo lockup
                     HStack {
                         Image("MycellmLockup")
                             .resizable()
@@ -17,72 +16,10 @@ struct DashboardView: View {
                     }
                     .padding(.horizontal)
 
-                    // Node status header
                     nodeStatusHeader
-
-                    // Metric cards (2x2 grid)
-                    LazyVGrid(columns: [
-                        GridItem(.flexible(), spacing: 12),
-                        GridItem(.flexible(), spacing: 12),
-                    ], spacing: 12) {
-                        MetricCard(
-                            title: "Inference",
-                            value: "\(node.totalInferences)",
-                            subtitle: "total requests",
-                            color: .computeRed,
-                            icon: "brain"
-                        )
-                        MetricCard(
-                            title: "Network",
-                            value: "\(node.connectedPeers)",
-                            subtitle: "peers",
-                            color: .relayBlue,
-                            icon: "network"
-                        )
-                        MetricCard(
-                            title: "Models",
-                            value: "\(node.loadedModels)",
-                            subtitle: "loaded",
-                            color: .sporeGreen,
-                            icon: "cube.box"
-                        )
-                        MetricCard(
-                            title: "Credits",
-                            value: String(format: "%.1f", node.creditBalance),
-                            subtitle: "balance",
-                            color: .ledgerGold,
-                            icon: "dollarsign.circle"
-                        )
-                    }
-                    .padding(.horizontal)
-
-                    // First-run nudge
-                    if node.modelManager.localFiles.isEmpty {
-                        HStack(spacing: 12) {
-                            Image("MycellmLogo-red")
-                                .resizable()
-                                .scaledToFit()
-                                .frame(width: 32, height: 32)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("Get Started")
-                                    .font(.mono(13, weight: .semibold))
-                                    .foregroundStyle(Color.consoleText)
-                                Text("Download a model from the Models tab to start chatting on-device and contributing to the network.")
-                                    .font(.mono(11))
-                                    .foregroundStyle(Color.consoleDim)
-                            }
-                        }
-                        .padding(14)
-                        .background(Color.sporeGreen.opacity(0.08))
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
-                        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.sporeGreen.opacity(0.2), lineWidth: 1))
-                        .padding(.horizontal)
-                    }
-
-                    // Start/Stop toggle
+                    metricCards
+                    firstRunNudge
                     nodeToggle
-
-                    // Activity feed
                     activityFeed
                 }
                 .frame(maxWidth: .infinity)
@@ -93,9 +30,70 @@ struct DashboardView: View {
         }
     }
 
+    private var metricCards: some View {
+        LazyVGrid(columns: [
+            GridItem(.flexible(), spacing: 12),
+            GridItem(.flexible(), spacing: 12),
+        ], spacing: 12) {
+            MetricCard(
+                title: "Inference",
+                value: "\(node.stats.totalInferences)",
+                subtitle: "total requests",
+                color: .computeRed,
+                icon: "brain"
+            )
+            MetricCard(
+                title: "Network",
+                value: "\(node.connection.connectedPeers)",
+                subtitle: "peers",
+                color: .relayBlue,
+                icon: "network"
+            )
+            MetricCard(
+                title: "Models",
+                value: "\(node.loadedModels)",
+                subtitle: "loaded",
+                color: .sporeGreen,
+                icon: "cube.box"
+            )
+            MetricCard(
+                title: "Credits",
+                value: String(format: "%.2f", node.stats.creditBalance),
+                subtitle: "balance",
+                color: .ledgerGold,
+                icon: "dollarsign.circle"
+            )
+        }
+        .padding(.horizontal)
+    }
+
+    @ViewBuilder
+    private var firstRunNudge: some View {
+        if node.modelManager.localFiles.isEmpty {
+            HStack(spacing: 12) {
+                Image("MycellmLogo-red")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 32, height: 32)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Get Started")
+                        .font(.mono(13, weight: .semibold))
+                        .foregroundStyle(Color.consoleText)
+                    Text("Download a model from the Models tab to start chatting on-device and contributing to the network.")
+                        .font(.mono(11))
+                        .foregroundStyle(Color.consoleDim)
+                }
+            }
+            .padding(14)
+            .background(Color.sporeGreen.opacity(0.08))
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.sporeGreen.opacity(0.2), lineWidth: 1))
+            .padding(.horizontal)
+        }
+    }
+
     private var nodeStatusHeader: some View {
         HStack(spacing: 12) {
-            // Pulsing status dot
             Circle()
                 .fill(node.isRunning ? Color.sporeGreen : Color.computeRed)
                 .frame(width: 12, height: 12)
@@ -112,25 +110,8 @@ struct DashboardView: View {
 
             Spacer()
 
-            // Bootstrap status (when not standalone)
             if node.networkMode != .standalone && node.isRunning {
-                HStack(spacing: 4) {
-                    Circle()
-                        .fill(bootstrapStatusColor)
-                        .frame(width: 6, height: 6)
-                    Text(node.bootstrapState.rawValue)
-                        .font(.mono(9))
-                        .foregroundStyle(Color.consoleDim)
-                    if node.bootstrapTransport != .none {
-                        Text(node.bootstrapTransport.rawValue)
-                            .font(.mono(8))
-                            .foregroundStyle(Color.consoleDim)
-                    }
-                }
-                .padding(.horizontal, 6)
-                .padding(.vertical, 3)
-                .background(Color.cardBackground)
-                .clipShape(Capsule())
+                bootstrapBadge
             }
 
             Text(node.networkMode.displayName)
@@ -143,8 +124,28 @@ struct DashboardView: View {
         .padding(.horizontal)
     }
 
+    private var bootstrapBadge: some View {
+        HStack(spacing: 4) {
+            Circle()
+                .fill(bootstrapStatusColor)
+                .frame(width: 6, height: 6)
+            Text(node.connection.bootstrapState.rawValue)
+                .font(.mono(9))
+                .foregroundStyle(Color.consoleDim)
+            if node.connection.bootstrapTransport != .none {
+                Text(node.connection.bootstrapTransport.rawValue)
+                    .font(.mono(8))
+                    .foregroundStyle(Color.consoleDim)
+            }
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 3)
+        .background(Color.cardBackground)
+        .clipShape(Capsule())
+    }
+
     private var bootstrapStatusColor: Color {
-        switch node.bootstrapState {
+        switch node.connection.bootstrapState {
         case .connected: Color.sporeGreen
         case .connecting, .handshaking, .reconnecting: Color.ledgerGold
         case .fallbackHTTP: Color.relayBlue
@@ -156,11 +157,7 @@ struct DashboardView: View {
     private var nodeToggle: some View {
         Button {
             Task {
-                if node.isRunning {
-                    await node.stop()
-                } else {
-                    await node.start()
-                }
+                if node.isRunning { await node.stop() } else { await node.start() }
             }
         } label: {
             HStack {
@@ -188,7 +185,7 @@ struct DashboardView: View {
                 .foregroundStyle(Color.consoleDim)
                 .padding(.bottom, 4)
 
-            if node.recentEvents.isEmpty {
+            if node.stats.recentEvents.isEmpty {
                 HStack {
                     Spacer()
                     VStack(spacing: 6) {
@@ -203,36 +200,45 @@ struct DashboardView: View {
                     Spacer()
                 }
             } else {
-                ForEach(node.recentEvents.prefix(20)) { event in
-                    HStack(alignment: .top, spacing: 10) {
-                        Image(systemName: event.icon)
-                            .font(.system(size: 10))
-                            .foregroundStyle(eventColor(event))
-                            .frame(width: 14, height: 14)
-
-                        Text(event.description)
-                            .font(.mono(11))
-                            .foregroundStyle(Color.consoleText)
-
-                        Spacer()
-
-                        Text(event.relativeTime)
-                            .font(.mono(9))
-                            .foregroundStyle(Color.consoleDim.opacity(0.6))
-                            .layoutPriority(1)
+                LazyVStack(alignment: .leading, spacing: 4) {
+                    ForEach(node.stats.recentEvents.prefix(20)) { event in
+                        ActivityRow(event: event)
                     }
-                    .padding(.vertical, 6)
-                    .padding(.horizontal, 10)
-                    .background(Color.cardBackground.opacity(0.5))
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
                 }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal)
     }
+}
 
-    private func eventColor(_ event: ActivityItem) -> Color {
+// MARK: - Activity Row (extracted to reduce type-checker load)
+
+private struct ActivityRow: View {
+    let event: ActivityItem
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: event.icon)
+                .font(.system(size: 10))
+                .foregroundStyle(color)
+                .frame(width: 14, height: 14)
+            Text(event.description)
+                .font(.mono(11))
+                .foregroundStyle(Color.consoleText)
+            Spacer()
+            Text(event.relativeTime)
+                .font(.mono(9))
+                .foregroundStyle(Color.consoleDim.opacity(0.6))
+                .layoutPriority(1)
+        }
+        .padding(.vertical, 6)
+        .padding(.horizontal, 10)
+        .background(Color.cardBackground.opacity(0.5))
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+    }
+
+    private var color: Color {
         switch event.kind {
         case .nodeStarted: .sporeGreen
         case .nodeStopped: .computeRed

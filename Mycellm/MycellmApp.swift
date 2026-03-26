@@ -45,18 +45,18 @@ struct RootView: View {
                             }
                         }
                     }
-                    .onReceive(Timer.publish(every: 30, on: .main, in: .common).autoconnect()) { _ in
-                        checkIdle(node: node)
-                        // Submit pending receipts to bootstrap
-                        Task { await node.flushReceipts() }
+                    // Task-based idle check + receipt flush (replaces Timer.publish)
+                    .task {
+                        while !Task.isCancelled {
+                            try? await Task.sleep(for: .seconds(30))
+                            guard !Task.isCancelled else { break }
+                            checkIdle(node: node)
+                            await node.flushReceipts()
+                        }
                     }
                     .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in
-                        // Request background time to finish in-progress inference
-                        let taskId = UIApplication.shared.beginBackgroundTask {
-                            // Expiration handler — clean up
-                        }
+                        let taskId = UIApplication.shared.beginBackgroundTask {}
                         Task {
-                            // Give in-progress inference 25s to complete
                             try? await Task.sleep(for: .seconds(25))
                             UIApplication.shared.endBackgroundTask(taskId)
                         }
@@ -70,7 +70,6 @@ struct RootView: View {
             }
         }
         .task {
-            // Heavy init happens here — splash is already visible
             async let node = await MainActor.run { NodeService() }
             async let container = await MainActor.run {
                 try? ModelContainer(for: StoredModel.self, ChatMessage.self, ChatSession.self, ActivityEvent.self)
@@ -79,16 +78,12 @@ struct RootView: View {
             let n = await node
             let c = await container
 
-            // Pre-warm keyboard during splash so first tap is instant
             await MainActor.run { KeyboardWarmer.warm() }
 
-            // Auto-load last model
             await n.modelManager.autoLoadLastModel()
 
-            // Auto-start the node (don't await — bootstrap connection can take time)
             Task { await n.start() }
 
-            // Wait for boot text to finish
             try? await Task.sleep(for: .seconds(2.0))
 
             nodeService = n

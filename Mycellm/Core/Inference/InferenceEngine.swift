@@ -15,16 +15,17 @@ actor InferenceEngine {
     private(set) var currentModel: String?
     private(set) var tokensPerSecond: Double = 0.0
 
-    nonisolated(unsafe) private var model: OpaquePointer?
-    nonisolated(unsafe) private var ctx: OpaquePointer?
+    private var model: OpaquePointer?
+    private var ctx: OpaquePointer?
 
     init() {
         llama_backend_init()
     }
 
-    deinit {
-        if let c = ctx { llama_free(c) }
-        if let m = model { llama_model_free(m) }
+    /// Call before releasing the last reference to free GPU resources.
+    func cleanup() {
+        if let c = ctx { llama_free(c); ctx = nil }
+        if let m = model { llama_model_free(m); model = nil }
         llama_backend_free()
     }
 
@@ -96,26 +97,44 @@ actor InferenceEngine {
 
     // MARK: - Inference
 
+    /// Decode prompt tokens in chunks that fit within n_batch.
+    private func decodePrompt(_ tokens: inout [llama_token], ctx: OpaquePointer) throws {
+        let batchSize = 512
+        var offset = 0
+        while offset < tokens.count {
+            let remaining = tokens.count - offset
+            let chunkSize = min(remaining, batchSize)
+            let batch = tokens.withUnsafeMutableBufferPointer { buf in
+                llama_batch_get_one(buf.baseAddress! + offset, Int32(chunkSize))
+            }
+            guard llama_decode(ctx, batch) == 0 else {
+                throw MycellmError.inferenceError("Prompt decode failed at offset \(offset)")
+            }
+            offset += chunkSize
+        }
+    }
+
     func complete(
         messages: [[String: String]],
         temperature: Double = 0.7,
         maxTokens: Int = 2048
     ) async throws -> (text: String, promptTokens: Int, completionTokens: Int) {
-        guard let model, let ctx else {
+        guard let model else {
             throw MycellmError.modelNotLoaded("No model loaded")
         }
 
         state = .inferring(currentModel ?? "")
         defer { state = .ready(currentModel ?? "") }
 
-        let prompt = applyChatTemplate(messages: messages, model: model)
+        guard let ctx else {
+            throw MycellmError.modelNotLoaded("No context available")
+        }
+
+        let fitted = fitMessages(messages, model: model)
+        let prompt = applyChatTemplate(messages: fitted, model: model)
         var promptTokens = tokenize(text: prompt, model: model)
 
-        // Decode prompt
-        let promptBatch = llama_batch_get_one(&promptTokens, Int32(promptTokens.count))
-        guard llama_decode(ctx, promptBatch) == 0 else {
-            throw MycellmError.inferenceError("Prompt decode failed")
-        }
+        try decodePrompt(&promptTokens, ctx: ctx)
 
         let sampler = buildSampler(temperature: Float(temperature))
         defer { llama_sampler_free(sampler) }
@@ -163,20 +182,22 @@ actor InferenceEngine {
         maxTokens: Int,
         continuation: AsyncThrowingStream<String, Error>.Continuation
     ) async throws {
-        guard let model, let ctx else {
+        guard let model else {
             throw MycellmError.modelNotLoaded("No model loaded")
         }
 
         state = .inferring(currentModel ?? "")
         defer { state = .ready(currentModel ?? "") }
 
-        let prompt = applyChatTemplate(messages: messages, model: model)
+        guard let ctx else {
+            throw MycellmError.modelNotLoaded("No context available")
+        }
+
+        let fitted = fitMessages(messages, model: model)
+        let prompt = applyChatTemplate(messages: fitted, model: model)
         var promptTokens = tokenize(text: prompt, model: model)
 
-        let promptBatch = llama_batch_get_one(&promptTokens, Int32(promptTokens.count))
-        guard llama_decode(ctx, promptBatch) == 0 else {
-            throw MycellmError.inferenceError("Prompt decode failed")
-        }
+        try decodePrompt(&promptTokens, ctx: ctx)
 
         let sampler = buildSampler(temperature: Float(temperature))
         defer { llama_sampler_free(sampler) }
@@ -203,6 +224,130 @@ actor InferenceEngine {
         let elapsed = Date().timeIntervalSince(startTime)
         tokensPerSecond = elapsed > 0 ? Double(count) / elapsed : 0
         continuation.finish()
+    }
+
+    // MARK: - Context Reset
+
+    /// Recreate the llama context to clear KV cache between conversations.
+    /// Call this when switching to a new chat session, NOT on every message.
+    func resetContext() throws {
+        guard let model else {
+            throw MycellmError.modelNotLoaded("No model loaded")
+        }
+        if let c = ctx { llama_free(c) }
+
+        var ctxParams = llama_context_default_params()
+        ctxParams.n_ctx = 4096
+        ctxParams.n_batch = 512
+        ctxParams.n_threads = Int32(max(1, ProcessInfo.processInfo.activeProcessorCount - 2))
+
+        guard let c = llama_init_from_model(model, ctxParams) else {
+            ctx = nil
+            state = .error("Failed to recreate context")
+            throw MycellmError.inferenceError("llama_init_from_model failed on context reset")
+        }
+        ctx = c
+    }
+
+    // MARK: - Context Window Management
+
+    /// Fit messages into the context window, compacting older turns into a summary
+    /// so the model retains the gist of the full conversation.
+    private func fitMessages(_ messages: [[String: String]], model: OpaquePointer) -> [[String: String]] {
+        let maxPromptTokens = 4096 - 512  // Reserve 512 tokens for response
+
+        // Try full history first
+        let fullPrompt = applyChatTemplate(messages: messages, model: model)
+        let fullTokens = tokenize(text: fullPrompt, model: model)
+        if fullTokens.count <= maxPromptTokens { return messages }
+
+        // Split: system prompt (if any), conversation history
+        let hasSystem = messages.first?["role"] == "system"
+        let systemMsgs = hasSystem ? [messages[0]] : []
+        let history = hasSystem ? Array(messages.dropFirst()) : messages
+
+        // We need to compact older messages into a summary.
+        // Keep the most recent N turns that fit, summarize everything before them.
+        // Start by keeping the last 4 messages (2 turns) and grow if we have room.
+        var keepCount = min(4, history.count)
+
+        // Find how many recent messages we can keep alongside a summary
+        let summaryBudget = 300  // Reserve ~300 tokens for the compacted summary
+        while keepCount < history.count {
+            let recentSlice = Array(history.suffix(keepCount))
+            let candidate = systemMsgs + [["role": "system", "content": String(repeating: "x", count: summaryBudget)]] + recentSlice
+            let prompt = applyChatTemplate(messages: candidate, model: model)
+            let tokens = tokenize(text: prompt, model: model)
+            if tokens.count > maxPromptTokens { break }
+            keepCount += 2  // Add one more turn
+        }
+        keepCount = min(keepCount, history.count)
+
+        let olderMessages = Array(history.dropLast(keepCount))
+        let recentMessages = Array(history.suffix(keepCount))
+
+        if olderMessages.isEmpty {
+            // Nothing to compact — just use what fits
+            return systemMsgs + recentMessages
+        }
+
+        // Build a compact summary of the older messages
+        let summary = compactSummary(of: olderMessages)
+        let summaryMsg = ["role": "system", "content": summary]
+
+        // Verify it fits; if not, trim the summary
+        let candidate = systemMsgs + [summaryMsg] + recentMessages
+        let prompt = applyChatTemplate(messages: candidate, model: model)
+        let tokens = tokenize(text: prompt, model: model)
+        if tokens.count <= maxPromptTokens {
+            return candidate
+        }
+
+        // Summary too long — truncate it
+        let maxSummaryChars = max(200, summary.count / 2)
+        let truncated = String(summary.prefix(maxSummaryChars)) + "…"
+        return systemMsgs + [["role": "system", "content": truncated]] + recentMessages
+    }
+
+    /// Build a structured summary of older conversation turns.
+    /// This is a deterministic extraction (no LLM call) — pulls key facts from each turn.
+    private func compactSummary(of messages: [[String: String]]) -> String {
+        var lines: [String] = ["[Earlier in this conversation:]"]
+
+        for msg in messages {
+            let role = msg["role"] ?? "user"
+            let content = msg["content"] ?? ""
+
+            if role == "user" {
+                // Extract the core question/request — first sentence or first 120 chars
+                let brief = extractBrief(content, maxLen: 120)
+                lines.append("- User asked: \(brief)")
+            } else if role == "assistant" {
+                // Extract key points from the response
+                let brief = extractBrief(content, maxLen: 150)
+                lines.append("- Assistant replied: \(brief)")
+            }
+        }
+
+        return lines.joined(separator: "\n")
+    }
+
+    /// Extract a brief representation: first sentence or truncated to maxLen.
+    private func extractBrief(_ text: String, maxLen: Int) -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Try first sentence
+        let sentenceEnders: [Character] = [".", "!", "?", "\n"]
+        if let endIdx = trimmed.firstIndex(where: { sentenceEnders.contains($0) }),
+           trimmed.distance(from: trimmed.startIndex, to: endIdx) < maxLen {
+            return String(trimmed[...endIdx])
+        }
+        // Truncate at word boundary
+        if trimmed.count <= maxLen { return trimmed }
+        let prefix = String(trimmed.prefix(maxLen))
+        if let lastSpace = prefix.lastIndex(of: " ") {
+            return String(prefix[..<lastSpace]) + "…"
+        }
+        return prefix + "…"
     }
 
     // MARK: - Helpers
