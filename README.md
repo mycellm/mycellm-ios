@@ -5,8 +5,8 @@
 <h1 align="center">mycellm_ iOS</h1>
 
 <p align="center">
-  <strong>The only distributed inference app for iOS.</strong><br>
-  <em>Your iPad is a peer, not just a client. Serve models. Earn credits. Chat privately.</em>
+  <strong>Native iOS app for the mycellm network.</strong><br>
+  <em>Your iPad serves inference at 30+ tokens/sec on Metal. Also works on iPhone.</em>
 </p>
 
 <p align="center">
@@ -30,11 +30,11 @@
 
 ## What is this?
 
-The mycellm iOS app turns any iPhone or iPad into a full peer on the [mycellm](https://github.com/mycellm/mycellm) distributed inference network — not just a client, but a node that serves inference to others. An iPad Pro with an M-series chip runs 3B+ models at 30+ tokens/sec on Metal. No other distributed inference project has a native mobile app.
+The mycellm iOS app turns your iPad into a full peer on the [mycellm](https://github.com/mycellm/mycellm) distributed inference network — serve inference to the network, earn credits, and chat with privacy protection. An iPad Pro with an M-series chip runs 3B+ models at 30+ tokens/sec on Metal. Also works on iPhone.
 
 - **On-device inference** — llama.cpp on Metal, streaming tokens with thermal throttling
 - **Network + local routing** — toggle per message, automatic fallback if network fails
-- **Sensitive Data Guard** — auto-scans prompts for PII and redirects to local model before sensitive data leaves your device
+- **Sensitive Data Guard** — prompts are scanned on-device for PII; sensitive queries route to your local model automatically
 - **Chat persistence** — threaded conversations with metadata (model, node, tokens/sec, route). Export, share, and private ephemeral sessions.
 - **Credit economy** — earn credits by seeding, spend them consuming. Signed receipts, no blockchain.
 - **OpenAI-compatible API** — your device serves `/v1/chat/completions` on your LAN for other tools
