@@ -24,6 +24,10 @@
 
 ---
 
+<p align="center">
+  <img src="screenshots/ipad-chat-network.png" alt="mycellm iPad — network chat with node attribution and spore particle background" width="100%">
+</p>
+
 ## What is this?
 
 The mycellm iOS app turns any iPhone or iPad into a full peer on the [mycellm](https://github.com/mycellm/mycellm) distributed inference network — not just a client, but a node that serves inference to others. An iPad Pro with an M-series chip runs 3B+ models at 30+ tokens/sec on Metal. No other distributed inference project has a native mobile app.
@@ -34,6 +38,10 @@ The mycellm iOS app turns any iPhone or iPad into a full peer on the [mycellm](h
 - **Chat persistence** — threaded conversations with metadata (model, node, tokens/sec, route). Export, share, and private ephemeral sessions.
 - **Credit economy** — earn credits by seeding, spend them consuming. Signed receipts, no blockchain.
 - **OpenAI-compatible API** — your device serves `/v1/chat/completions` on your LAN for other tools
+
+<p align="center">
+  <img src="screenshots/iphone-chat-ondevice.png" alt="mycellm iPhone — on-device inference with Llama 3.2 3B on Metal" width="300">
+</p>
 
 ## Requirements
 
@@ -91,6 +99,11 @@ Mycellm/
 │   └── Components/    Splash screen, screensaver
 └── Utilities/         CBOR coding, compression, hardware info
 ```
+
+<p align="center">
+  <img src="screenshots/ipad-dashboard.png" alt="mycellm dashboard — inference count, credit balance, QUIC connection, activity feed" width="49%">
+  <img src="screenshots/ipad-models.png" alt="mycellm models — Llama 3.2 loaded, HuggingFace suggested downloads" width="49%">
+</p>
 
 ### Design Principles
 
