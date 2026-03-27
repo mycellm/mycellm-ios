@@ -6,6 +6,7 @@ struct SettingsView: View {
     @Environment(\.showScreenSaver) private var showScreenSaver
     @State private var preferences = Preferences.shared
     @State private var showingExportKey = false
+    @State private var showingTipJar = false
     @State private var tipJar = TipJarManager()
 
     var body: some View {
@@ -328,68 +329,30 @@ struct SettingsView: View {
     // MARK: - Tip Jar
 
     private var tipJarSection: some View {
-        Section(header: Text("Buy Me a Coffee"), footer: Text("mycellm is free and open source. Tips help support continued development.").font(.mono(10))) {
-            tipJarContent
+        Section {
+            Button {
+                showingTipJar = true
+            } label: {
+                HStack {
+                    Text("☕")
+                    Text("Buy Me a Coffee")
+                        .font(.mono(13))
+                        .foregroundStyle(Color.consoleText)
+                    Spacer()
+                    if case .success = tipJar.purchaseState {
+                        Image(systemName: "heart.fill")
+                            .foregroundStyle(Color.computeRed)
+                    }
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 10))
+                        .foregroundStyle(Color.consoleDim)
+                }
+            }
         }
         .task { await tipJar.loadProducts() }
-    }
-
-    @ViewBuilder
-    private var tipJarContent: some View {
-        if tipJar.isLoading {
-            tipJarLoading
-        } else if tipJar.products.isEmpty {
-            tipJarPlaceholders
-        } else {
-            tipJarProducts
-        }
-        tipJarStatus
-    }
-
-    private var tipJarLoading: some View {
-        HStack {
-            Spacer()
-            ProgressView().tint(Color.sporeGreen)
-            Spacer()
-        }
-    }
-
-    private var tipJarPlaceholders: some View {
-        ForEach(TipJarManager.tipTiers, id: \.id) { tier in
-            HStack {
-                Text(tier.emoji)
-                Text(tier.label)
-                    .font(.mono(13))
-                    .foregroundStyle(Color.consoleText)
-                Spacer()
-                Text("—")
-                    .font(.mono(12))
-                    .foregroundStyle(Color.consoleDim)
-            }
-        }
-    }
-
-    private var tipJarProducts: some View {
-        ForEach(tipJar.products, id: \.id) { product in
-            TipJarRow(product: product, tipJar: tipJar)
-        }
-    }
-
-    @ViewBuilder
-    private var tipJarStatus: some View {
-        if case .success = tipJar.purchaseState {
-            HStack {
-                Image(systemName: "heart.fill")
-                    .foregroundStyle(Color.computeRed)
-                Text("Thank you for your support!")
-                    .font(.mono(12))
-                    .foregroundStyle(Color.sporeGreen)
-            }
-        }
-        if case .failed(let msg) = tipJar.purchaseState {
-            Text(msg)
-                .font(.mono(10))
-                .foregroundStyle(Color.computeRed)
+        .sheet(isPresented: $showingTipJar) {
+            TipJarSheet(tipJar: tipJar)
+                .presentationDetents([.medium])
         }
     }
 
@@ -469,31 +432,69 @@ struct SettingsView: View {
     }
 }
 
-// MARK: - Tip Jar Row
+// MARK: - Tip Jar Sheet
 
-private struct TipJarRow: View {
-    let product: Product
+private struct TipJarSheet: View {
     let tipJar: TipJarManager
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        Button {
-            Task { await tipJar.purchase(product) }
-        } label: {
-            label
-        }
-        .disabled(tipJar.purchaseState.isPurchasing)
-    }
+        NavigationStack {
+            List {
+                Section(footer: Text("mycellm is free and open source. Tips help support continued development.").font(.mono(10))) {
+                    if tipJar.isLoading {
+                        HStack { Spacer(); ProgressView().tint(Color.sporeGreen); Spacer() }
+                    } else if tipJar.products.isEmpty {
+                        ForEach(TipJarManager.tipTiers, id: \.id) { tier in
+                            HStack {
+                                Text(tier.emoji)
+                                Text(tier.label).font(.mono(13)).foregroundStyle(Color.consoleText)
+                                Spacer()
+                                Text("—").font(.mono(12)).foregroundStyle(Color.consoleDim)
+                            }
+                        }
+                    } else {
+                        ForEach(tipJar.products, id: \.id) { product in
+                            Button {
+                                Task { await tipJar.purchase(product) }
+                            } label: {
+                                HStack {
+                                    Text(tipJar.emoji(for: product.id))
+                                    Text(tipJar.label(for: product.id))
+                                        .font(.mono(13))
+                                        .foregroundStyle(Color.consoleText)
+                                    Spacer()
+                                    Text(product.displayPrice)
+                                        .font(.mono(12, weight: .medium))
+                                        .foregroundStyle(Color.sporeGreen)
+                                }
+                            }
+                            .disabled(tipJar.purchaseState.isPurchasing)
+                        }
+                    }
 
-    private var label: some View {
-        HStack {
-            Text(tipJar.emoji(for: product.id))
-            Text(tipJar.label(for: product.id))
-                .font(.mono(13))
-                .foregroundStyle(Color.consoleText)
-            Spacer()
-            Text(product.displayPrice)
-                .font(.mono(12, weight: .medium))
-                .foregroundStyle(Color.sporeGreen)
+                    if case .success = tipJar.purchaseState {
+                        HStack {
+                            Image(systemName: "heart.fill").foregroundStyle(Color.computeRed)
+                            Text("Thank you for your support!")
+                                .font(.mono(12)).foregroundStyle(Color.sporeGreen)
+                        }
+                    }
+                    if case .failed(let msg) = tipJar.purchaseState {
+                        Text(msg).font(.mono(10)).foregroundStyle(Color.computeRed)
+                    }
+                }
+            }
+            .scrollContentBackground(.hidden)
+            .background(Color.voidBlack)
+            .navigationTitle("Buy Me a Coffee")
+            .navigationBarTitleDisplayMode(.inline)
+            .font(.mono(13))
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done") { dismiss() }.font(.mono(13))
+                }
+            }
         }
     }
 }
