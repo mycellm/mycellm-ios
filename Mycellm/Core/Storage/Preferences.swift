@@ -105,6 +105,26 @@ final class Preferences: @unchecked Sendable {
         set { defaults.set(newValue, forKey: "screen_saver_delay") }
     }
 
+    var screenSaverShowLogo: Bool {
+        get { defaults.object(forKey: "screen_saver_show_logo") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "screen_saver_show_logo") }
+    }
+
+    var screenSaverShowHostInfo: Bool {
+        get { defaults.bool(forKey: "screen_saver_show_host_info") }
+        set { defaults.set(newValue, forKey: "screen_saver_show_host_info") }
+    }
+
+    var screenSaverShowTime: Bool {
+        get { defaults.bool(forKey: "screen_saver_show_time") }
+        set { defaults.set(newValue, forKey: "screen_saver_show_time") }
+    }
+
+    var screenSaverShowStats: Bool {
+        get { defaults.bool(forKey: "screen_saver_show_stats") }
+        set { defaults.set(newValue, forKey: "screen_saver_show_stats") }
+    }
+
     // MARK: - Chat State
 
     var chatRoute: String {

@@ -2,9 +2,18 @@ import SwiftUI
 
 /// OLED-safe screensaver: mushroom logo drifting through brand colors
 /// with green spore particles that float and link — matching the website.
+/// Supports configurable overlays: host info, time, network stats.
 struct ScreenSaverView: View {
     let onTap: () -> Void
 
+    // Optional stats passed from parent (avoids tight coupling to NodeService)
+    var nodeName: String = ""
+    var localIP: String = ""
+    var connectedPeers: Int = 0
+    var loadedModels: Int = 0
+    var tokensPerSec: Double = 0
+
+    @State private var preferences = Preferences.shared
     @State private var logoPosition = CGPoint(x: 0.5, y: 0.5)
     @State private var logoScale: CGFloat = 1.0
     @State private var spores: [Spore] = []
@@ -32,8 +41,21 @@ struct ScreenSaverView: View {
     @State private var colorIndex: Int = 0
     @State private var colorProgress: Double = 0.0
 
+    // Stats cycling
+    @State private var statIndex: Int = 0
+    @State private var statPhase: Double = 0.0
+
+    // Clock
+    @State private var currentTime: String = ""
+
     // Connection line distance threshold (normalized 0-1 coords)
     private let linkThreshold: CGFloat = 0.12
+
+    private var showLogo: Bool { preferences.screenSaverShowLogo }
+    private var showHostInfo: Bool { preferences.screenSaverShowHostInfo }
+    private var showTime: Bool { preferences.screenSaverShowTime }
+    private var showStats: Bool { preferences.screenSaverShowStats }
+    private var hasOverlay: Bool { showHostInfo || showTime || showStats }
 
     var body: some View {
         GeometryReader { geo in
@@ -68,34 +90,84 @@ struct ScreenSaverView: View {
                 }
             }
 
-            // Logo overlay — crossfade colored mushrooms
-            ZStack {
-                ForEach(Array(Self.logoAssets.enumerated()), id: \.offset) { idx, asset in
-                    Image(asset)
-                        .resizable()
-                        .scaledToFit()
-                        .frame(width: 140, height: 140)
-                        .opacity(logoOpacity(for: idx))
+            // Drifting content block (logo + overlays)
+            VStack(spacing: 12) {
+                if showLogo {
+                    ZStack {
+                        ForEach(Array(Self.logoAssets.enumerated()), id: \.offset) { idx, asset in
+                            Image(asset)
+                                .resizable()
+                                .scaledToFit()
+                                .frame(width: 140, height: 140)
+                                .opacity(logoOpacity(for: idx))
+                        }
+                    }
+                    .scaleEffect(logoScale)
+                    .shadow(color: currentColor.opacity(0.5), radius: 24)
+                }
+
+                if hasOverlay {
+                    VStack(spacing: 6) {
+                        if showHostInfo {
+                            HStack(spacing: 8) {
+                                if !nodeName.isEmpty {
+                                    Text(nodeName)
+                                        .font(.mono(12, weight: .medium))
+                                }
+                                if !localIP.isEmpty {
+                                    Text(localIP)
+                                        .font(.mono(11))
+                                        .foregroundStyle(Color.consoleDim)
+                                }
+                            }
+                            .foregroundStyle(currentColor.opacity(0.7))
+                        }
+
+                        if showTime {
+                            Text(currentTime)
+                                .font(.mono(showLogo ? 13 : 28, weight: .medium))
+                                .foregroundStyle(currentColor.opacity(0.6))
+                        }
+
+                        if showStats {
+                            Text(currentStatLine)
+                                .font(.mono(11))
+                                .foregroundStyle(Self.sporeGlow.opacity(0.6))
+                                .animation(.easeInOut(duration: 0.5), value: statIndex)
+                        }
+                    }
                 }
             }
-            .scaleEffect(logoScale)
             .position(
                 x: logoPosition.x * geo.size.width,
                 y: logoPosition.y * geo.size.height
             )
-            .shadow(color: currentColor.opacity(0.5), radius: 24)
 
             // Invisible layer to capture taps
             Color.clear
                 .contentShape(Rectangle())
                 .onTapGesture { onTap() }
-                .onAppear { seedSpores() }
+                .onAppear {
+                    seedSpores()
+                    updateTime()
+                }
         }
         .background(Color.black)
         .ignoresSafeArea()
         .onReceive(timer) { _ in tick() }
         .statusBarHidden()
         .persistentSystemOverlays(.hidden)
+    }
+
+    // MARK: - Stats cycling
+
+    private var currentStatLine: String {
+        let lines = [
+            "\(connectedPeers) peer\(connectedPeers == 1 ? "" : "s") online",
+            "\(loadedModels) model\(loadedModels == 1 ? "" : "s") available",
+            tokensPerSec > 0 ? String(format: "%.1f tok/s", tokensPerSec) : "idle",
+        ]
+        return lines[statIndex % lines.count]
     }
 
     // MARK: - Tick
@@ -128,6 +200,18 @@ struct ScreenSaverView: View {
             colorIndex = (colorIndex + 1) % Self.logoAssets.count
         }
 
+        // Stats cycle (~5s per stat)
+        statPhase += 1.0 / (30.0 * 5.0)
+        if statPhase >= 1.0 {
+            statPhase = 0.0
+            statIndex = (statIndex + 1) % 3
+        }
+
+        // Update clock every ~30 frames (1s)
+        if Int(zoomPhase * 100) % 100 == 0 {
+            updateTime()
+        }
+
         // Move spores — gassy float, bounce off edges (matching website)
         for i in spores.indices {
             spores[i].x += spores[i].vx
@@ -138,6 +222,14 @@ struct ScreenSaverView: View {
 
             spores[i].phase += spores[i].phaseSpeed
         }
+    }
+
+    // MARK: - Time
+
+    private func updateTime() {
+        let fmt = DateFormatter()
+        fmt.dateFormat = "h:mm a"
+        currentTime = fmt.string(from: Date())
     }
 
     // MARK: - Logo crossfade
