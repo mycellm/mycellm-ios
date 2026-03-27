@@ -3,9 +3,9 @@ import StoreKit
 
 struct SettingsView: View {
     @Environment(NodeService.self) private var node
+    @Environment(\.showScreenSaver) private var showScreenSaver
     @State private var preferences = Preferences.shared
     @State private var showingExportKey = false
-    @State private var showingScreenSaver = false
     @State private var tipJar = TipJarManager()
 
     var body: some View {
@@ -29,11 +29,6 @@ struct SettingsView: View {
             .background(Color.voidBlack)
             .navigationTitle("Settings")
             .font(.mono(13))
-            .fullScreenCover(isPresented: $showingScreenSaver) {
-                ScreenSaverView {
-                    showingScreenSaver = false
-                }
-            }
         }
     }
 
@@ -128,10 +123,19 @@ struct SettingsView: View {
             .font(.mono(13))
 
             if preferences.sensitiveGuardEnabled {
-                LabeledContent("Rules") {
-                    Text("\(SensitiveDataGuard.builtinRules.count) built-in")
-                        .font(.mono(12))
-                        .foregroundStyle(Color.consoleDim)
+                NavigationLink {
+                    RulesView()
+                } label: {
+                    LabeledContent("Rules") {
+                        HStack(spacing: 4) {
+                            Text("\(SensitiveDataGuard.builtinRules.count) built-in")
+                                .font(.mono(12))
+                                .foregroundStyle(Color.consoleDim)
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 10))
+                                .foregroundStyle(Color.consoleDim)
+                        }
+                    }
                 }
                 LabeledContent("Public Network") {
                     Text("Block + redirect")
@@ -234,7 +238,7 @@ struct SettingsView: View {
     private var screensaverSection: some View {
         Section(header: Text("Screensaver"), footer: Text("Prevents burn-in on OLED displays. Activates automatically after the configured idle time when Keep Awake is enabled.").font(.mono(10))) {
             Button {
-                showingScreenSaver = true
+                showScreenSaver.wrappedValue = true
             } label: {
                 HStack {
                     Image(systemName: "sparkles")
@@ -251,20 +255,44 @@ struct SettingsView: View {
             ))
             .font(.mono(13))
 
-            if preferences.screenSaverEnabled {
-                Picker("Activate After", selection: Binding(
-                    get: { preferences.screenSaverDelay },
-                    set: { preferences.screenSaverDelay = $0 }
-                )) {
-                    Text("1 min").tag(1)
-                    Text("2 min").tag(2)
-                    Text("5 min").tag(5)
-                    Text("10 min").tag(10)
-                    Text("15 min").tag(15)
-                    Text("30 min").tag(30)
-                }
-                .font(.mono(13))
+            Picker("Activate After", selection: Binding(
+                get: { preferences.screenSaverDelay },
+                set: { preferences.screenSaverDelay = $0 }
+            )) {
+                Text("1 min").tag(1)
+                Text("2 min").tag(2)
+                Text("5 min").tag(5)
+                Text("10 min").tag(10)
+                Text("15 min").tag(15)
+                Text("30 min").tag(30)
             }
+            .font(.mono(13))
+            .disabled(!preferences.screenSaverEnabled)
+            .foregroundStyle(preferences.screenSaverEnabled ? Color.consoleText : Color.consoleDim)
+
+            Toggle("Show Logo", isOn: Binding(
+                get: { preferences.screenSaverShowLogo },
+                set: { preferences.screenSaverShowLogo = $0 }
+            ))
+            .font(.mono(13))
+
+            Toggle("Show Host / IP", isOn: Binding(
+                get: { preferences.screenSaverShowHostInfo },
+                set: { preferences.screenSaverShowHostInfo = $0 }
+            ))
+            .font(.mono(13))
+
+            Toggle("Show Time", isOn: Binding(
+                get: { preferences.screenSaverShowTime },
+                set: { preferences.screenSaverShowTime = $0 }
+            ))
+            .font(.mono(13))
+
+            Toggle("Show Network Stats", isOn: Binding(
+                get: { preferences.screenSaverShowStats },
+                set: { preferences.screenSaverShowStats = $0 }
+            ))
+            .font(.mono(13))
         }
     }
 

@@ -1,6 +1,19 @@
 import SwiftUI
 import SwiftData
 
+// MARK: - Screensaver Environment Key
+
+private struct ShowScreenSaverKey: EnvironmentKey {
+    static let defaultValue: Binding<Bool> = .constant(false)
+}
+
+extension EnvironmentValues {
+    var showScreenSaver: Binding<Bool> {
+        get { self[ShowScreenSaverKey.self] }
+        set { self[ShowScreenSaverKey.self] = newValue }
+    }
+}
+
 @main
 struct MycellmApp: App {
     var body: some Scene {
@@ -35,14 +48,22 @@ struct RootView: View {
                     ZStack {
                         MainTabView()
                             .environment(node)
+                            .environment(\.showScreenSaver, $showScreenSaver)
                             .modelContainer(container)
                             .scrollDismissesKeyboard(.interactively)
 
                         if showScreenSaver {
-                            ScreenSaverView {
-                                showScreenSaver = false
-                                lastInteraction = Date()
-                            }
+                            ScreenSaverView(
+                                onTap: {
+                                    showScreenSaver = false
+                                    lastInteraction = Date()
+                                },
+                                nodeName: node.nodeName,
+                                localIP: localIPAddress() ?? "",
+                                connectedPeers: node.connection.connectedPeers,
+                                loadedModels: node.modelManager.loadedModels.count,
+                                tokensPerSec: 0
+                            )
                         }
                     }
                     // Task-based idle check + receipt flush (replaces Timer.publish)
@@ -94,6 +115,24 @@ struct RootView: View {
 
     private func applyKeepAwake(node: NodeService) {
         UIApplication.shared.isIdleTimerDisabled = Preferences.shared.keepAwake && node.isRunning
+    }
+
+    private func localIPAddress() -> String? {
+        var address: String?
+        var ifaddr: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&ifaddr) == 0, let firstAddr = ifaddr else { return nil }
+        defer { freeifaddrs(ifaddr) }
+        for ptr in sequence(first: firstAddr, next: { $0.pointee.ifa_next }) {
+            let iface = ptr.pointee
+            guard iface.ifa_addr.pointee.sa_family == UInt8(AF_INET) else { continue }
+            let name = String(cString: iface.ifa_name)
+            guard name == "en0" || name == "en1" else { continue }
+            var hostname = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            getnameinfo(iface.ifa_addr, socklen_t(iface.ifa_addr.pointee.sa_len),
+                        &hostname, socklen_t(hostname.count), nil, 0, NI_NUMERICHOST)
+            address = String(cString: hostname)
+        }
+        return address
     }
 
     private func checkIdle(node: NodeService) {
