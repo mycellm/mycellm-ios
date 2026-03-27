@@ -396,9 +396,9 @@ struct ChatView: View {
                     .disabled(messages.isEmpty)
 
                     Button { newSession() } label: {
-                        Image(systemName: "square.and.pencil")
-                            .font(.system(size: 14))
-                            .foregroundStyle(Color.consoleDim)
+                        Image(systemName: "plus.circle.fill")
+                            .font(.system(size: 20))
+                            .foregroundStyle(Color.sporeGreen)
                     }
                     .buttonStyle(.plain)
                 }

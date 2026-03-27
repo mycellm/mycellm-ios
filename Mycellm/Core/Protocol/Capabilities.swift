@@ -97,7 +97,7 @@ struct Capabilities: Sendable {
     var maxConcurrent: Int = 2
     var estTokS: Double = 0.0
     var role: String = "seeder"
-    var version: String = "0.1.0"
+    var version: String = NetworkConfig.version
     var networkIds: [String] = []
 
     func toDict() -> [String: CBORValue] {

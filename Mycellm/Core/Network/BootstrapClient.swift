@@ -241,7 +241,7 @@ actor BootstrapClient {
         let body: [String: Any] = [
             "peer_id": peerId,
             "platform": "ios",
-            "version": "0.1.0",
+            "version": NetworkConfig.version,
             "api_addr": "\(localIP):\(apiPort)",
             "capabilities": [
                 "role": capabilities.role,

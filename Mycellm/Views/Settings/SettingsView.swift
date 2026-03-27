@@ -22,8 +22,8 @@ struct SettingsView: View {
                 screensaverSection
                 storageSection
                 telemetrySection
-                tipJarSection
                 aboutSection
+                tipJarSection
                 footerSection
             }
             .scrollContentBackground(.hidden)
@@ -366,7 +366,7 @@ struct SettingsView: View {
                     .foregroundStyle(Color.consoleDim)
             }
             LabeledContent("mycellm Core") {
-                Text("0.1.0")
+                Text(NetworkConfig.version)
                     .font(.mono(12))
                     .foregroundStyle(Color.consoleDim)
             }

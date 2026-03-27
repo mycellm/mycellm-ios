@@ -170,7 +170,7 @@ final class NodeService: @unchecked Sendable {
                 },
                 hardware: HardwareInfo.capabilitiesHardware(),
                 role: modelManager.loadedModels.isEmpty ? "consumer" : "seeder",
-                version: "0.1.0"
+                version: NetworkConfig.version
             )
 
             let weakSelf = Weak(self)
