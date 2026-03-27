@@ -30,6 +30,7 @@ struct ChatView: View {
     @State private var showSensitiveAlert = false
     @State private var scanTask: Task<Void, Never>?
     @AppStorage("chat_ai_disclaimer_dismissed") private var disclaimerDismissed = false
+    @State private var showNewSessionConfirm = false
 
     // Session management
     @State private var currentSession: ChatSession?
@@ -140,6 +141,25 @@ struct ChatView: View {
                 Color.voidBlack
                 SporeBackground()
             }
+            .overlay(alignment: .top) {
+                if showNewSessionConfirm {
+                    HStack(spacing: 6) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(Color.sporeGreen)
+                        Text("New chat started")
+                            .font(.mono(12, weight: .medium))
+                            .foregroundStyle(Color.consoleText)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+                    .background(Color.cardBackground)
+                    .clipShape(Capsule())
+                    .shadow(color: Color.sporeGreen.opacity(0.2), radius: 8)
+                    .padding(.top, 60)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                    .animation(.easeOut(duration: 0.3), value: showNewSessionConfirm)
+                }
+            }
             .toolbar(.hidden, for: .navigationBar)
             .onAppear {
                 configureRemoteClient()
@@ -184,6 +204,13 @@ struct ChatView: View {
         currentSession = session
         messages = []
         showSessionList = false
+
+        // Brief visual confirmation
+        showNewSessionConfirm = true
+        Task {
+            try? await Task.sleep(for: .seconds(1.5))
+            showNewSessionConfirm = false
+        }
     }
 
     private func switchToSession(_ session: ChatSession) {
@@ -398,9 +425,10 @@ struct ChatView: View {
                     Button { newSession() } label: {
                         Image(systemName: "plus.circle.fill")
                             .font(.system(size: 20))
-                            .foregroundStyle(Color.sporeGreen)
+                            .foregroundStyle(messages.isEmpty ? Color.consoleDim : Color.sporeGreen)
                     }
                     .buttonStyle(.plain)
+                    .disabled(messages.isEmpty)
                 }
             }
 
