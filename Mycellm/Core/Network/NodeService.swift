@@ -131,6 +131,7 @@ final class NodeService: @unchecked Sendable {
         }
 
         modelManager.scanLocalModels()
+        relayManager.startPolling()
 
         Task { await natDiscovery.start() }
 
@@ -164,12 +165,13 @@ final class NodeService: @unchecked Sendable {
                 }
             }
 
+            let publicModels = modelManager.loadedModels.filter { $0.scope == "public" }
             let caps = Capabilities(
-                models: modelManager.loadedModels.map { m in
+                models: publicModels.map { m in
                     ModelCapability(name: m.name, backend: "llama.cpp", scope: m.scope)
                 },
                 hardware: HardwareInfo.capabilitiesHardware(),
-                role: modelManager.loadedModels.isEmpty ? "consumer" : "seeder",
+                role: publicModels.isEmpty ? "consumer" : "seeder",
                 version: NetworkConfig.version
             )
 
@@ -186,6 +188,7 @@ final class NodeService: @unchecked Sendable {
     func stop() async {
         guard isRunning else { return }
         await httpServer.stop()
+        relayManager.stopPolling()
         await bootstrapClient.disconnect()
         connection.bootstrapState = .disconnected
         connection.bootstrapTransport = .none
