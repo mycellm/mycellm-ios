@@ -238,7 +238,39 @@ struct ModelsView: View {
             }
 
             if modelManager.localFiles.isEmpty && downloader.activeDownloads.isEmpty && apiModels.isEmpty && relays.isEmpty {
-                EmptyState(message: "No models yet — tap + to add one", icon: "doc")
+                VStack(spacing: 16) {
+                    Image("MycellmLogo-green")
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 64, height: 64)
+                        .opacity(0.4)
+
+                    Text("No models loaded")
+                        .font(.mono(14, weight: .medium))
+                        .foregroundStyle(Color.consoleText)
+
+                    Text("Download a model from HuggingFace, import a\nlocal GGUF, or connect an API provider.")
+                        .font(.mono(11))
+                        .foregroundStyle(Color.consoleDim)
+                        .multilineTextAlignment(.center)
+
+                    Button {
+                        activeSheet = .huggingFace
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "magnifyingglass")
+                            Text("Browse HuggingFace")
+                                .font(.mono(12, weight: .medium))
+                        }
+                        .foregroundStyle(Color.voidBlack)
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 10)
+                        .background(Color.sporeGreen)
+                        .clipShape(Capsule())
+                    }
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 40)
             } else {
                 ForEach(modelManager.localFiles) { file in
                     localFileRow(file)
