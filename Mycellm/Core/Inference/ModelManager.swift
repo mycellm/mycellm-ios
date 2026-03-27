@@ -165,6 +165,14 @@ final class ModelManager: @unchecked Sendable {
         loadedModels.append(loaded)
     }
 
+    /// Remove an API-backed model.
+    func removeAPIModel(name: String) {
+        loadedModels.removeAll { $0.name == name && $0.filename.hasPrefix("api:") }
+        var saved = loadSavedAPIConfigs()
+        saved.removeAll { $0.name == name }
+        saveAPIConfigs(saved)
+    }
+
     struct APIModelConfig: Codable {
         let name: String
         let apiBase: String
