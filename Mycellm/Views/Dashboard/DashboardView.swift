@@ -251,6 +251,8 @@ private struct ActivityRow: View {
         case .creditSpent: .ledgerGold
         case .peerConnected: .sporeGreen
         case .peerDisconnected: .consoleDim
+        case .networkInfo: .relayBlue
+        case .relayDiscovered: .poisonPurple
         case .error: .computeRed
         }
     }

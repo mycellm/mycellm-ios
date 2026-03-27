@@ -133,7 +133,19 @@ final class NodeService: @unchecked Sendable {
         modelManager.scanLocalModels()
         relayManager.startPolling()
 
-        Task { await natDiscovery.start() }
+        Task {
+            await natDiscovery.start()
+            // Emit network info after first probe
+            try? await Task.sleep(for: .seconds(8))
+            let nat = await natDiscovery.info
+            if !nat.localIP.isEmpty || !nat.publicIP.isEmpty {
+                stats.addEvent(.networkInfo(
+                    lan: nat.localIP.isEmpty ? "—" : nat.localIP,
+                    wan: nat.publicIP.isEmpty ? "—" : nat.publicIP,
+                    nat: nat.natType.rawValue
+                ))
+            }
+        }
 
         if networkMode.usesBootstrap {
             await bootstrapClient.configure(
@@ -304,6 +316,8 @@ struct ActivityItem: Identifiable, Sendable {
         case creditSpent(Double, String)
         case peerConnected(String)
         case peerDisconnected(String)
+        case networkInfo(lan: String, wan: String, nat: String)
+        case relayDiscovered(name: String, models: Int)
         case error(String)
     }
 
@@ -320,6 +334,8 @@ struct ActivityItem: Identifiable, Sendable {
         case .creditSpent: "minus.circle.fill"
         case .peerConnected: "person.badge.plus"
         case .peerDisconnected: "person.badge.minus"
+        case .networkInfo: "wifi"
+        case .relayDiscovered: "display"
         case .error: "exclamationmark.triangle.fill"
         }
     }
@@ -331,12 +347,14 @@ struct ActivityItem: Identifiable, Sendable {
         case .networkModeChanged(let mode): String(localized: "Switched to \(mode.displayName)")
         case .modelLoaded(let name): String(localized: "Loaded \(name)")
         case .modelUnloaded(let name): String(localized: "Unloaded \(name)")
-        case .inferenceCompleted(let model, let tokens): String(localized: "Served \(tokens) tokens (\(model))")
-        case .httpServerStarted(let port): String(localized: "HTTP API on :\(port)")
-        case .creditEarned(let amount, let from): String(localized: "+\(String(format: "%.3f", amount)) credits from \(from)")
-        case .creditSpent(let amount, let to): String(localized: "-\(String(format: "%.3f", amount)) credits to \(to)")
+        case .inferenceCompleted(let model, let tokens): "Served \(tokens) tokens (\(model))"
+        case .httpServerStarted(let port): "HTTP API on :\(port)"
+        case .creditEarned(let amount, let from): String(format: "+%.3f credits from %@", amount, from)
+        case .creditSpent(let amount, let to): String(format: "-%.3f credits to %@", amount, to)
         case .peerConnected(let peer): String(localized: "Connected: \(peer)")
         case .peerDisconnected(let peer): String(localized: "Disconnected: \(peer)")
+        case .networkInfo(let lan, let wan, let nat): "LAN \(lan) · WAN \(wan) · \(nat)"
+        case .relayDiscovered(let name, let models): String(localized: "Relay \(name): \(models) model(s)")
         case .error(let msg): msg
         }
     }
