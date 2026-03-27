@@ -132,6 +132,80 @@ final class ModelManager: @unchecked Sendable {
         try? await loadModel(file: file, scope: "public")
     }
 
+    /// Load an API-backed model (OpenAI-compatible endpoint).
+    /// This registers the model without loading a GGUF — inference is proxied to the remote API.
+    func loadAPIModel(name: String, apiBase: String, apiKey: String, apiModel: String, ctxLen: Int) async throws {
+        // Validate connectivity by listing models
+        var base = apiBase.trimmingCharacters(in: .whitespaces)
+        if base.hasSuffix("/") { base.removeLast() }
+        if !base.hasSuffix("/v1") && !base.contains("/v1/") { base += "/v1" }
+
+        var request = URLRequest(url: URL(string: "\(base)/models")!)
+        request.timeoutInterval = 10
+        if !apiKey.isEmpty {
+            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        }
+
+        let (_, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse, (200...499).contains(http.statusCode) else {
+            throw MycellmError.transportError("Cannot reach \(base)")
+        }
+
+        // Store config for persistence
+        let config = APIModelConfig(name: name, apiBase: base, apiKey: apiKey, apiModel: apiModel, ctxLen: ctxLen)
+        var saved = loadSavedAPIConfigs()
+        saved.removeAll { $0.name == name }
+        saved.append(config)
+        saveAPIConfigs(saved)
+
+        let loaded = LoadedModel(
+            name: name, filename: "api:\(name)",
+            sizeBytes: 0, scope: "home", loadedAt: Date()
+        )
+        loadedModels.append(loaded)
+    }
+
+    struct APIModelConfig: Codable {
+        let name: String
+        let apiBase: String
+        let apiKey: String
+        let apiModel: String
+        let ctxLen: Int
+    }
+
+    func loadSavedAPIConfigs() -> [APIModelConfig] {
+        guard let data = UserDefaults.standard.data(forKey: "api_model_configs"),
+              let configs = try? JSONDecoder().decode([APIModelConfig].self, from: data) else { return [] }
+        return configs
+    }
+
+    private func saveAPIConfigs(_ configs: [APIModelConfig]) {
+        if let data = try? JSONEncoder().encode(configs) {
+            UserDefaults.standard.set(data, forKey: "api_model_configs")
+        }
+    }
+
+    /// Import a GGUF file from an external URL (Files.app, iCloud, USB drive).
+    /// Copies the file into the models directory with security-scoped access.
+    func importFile(from url: URL) throws {
+        let accessing = url.startAccessingSecurityScopedResource()
+        defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+
+        let dest = Self.modelsDirectory.appendingPathComponent(url.lastPathComponent)
+        if FileManager.default.fileExists(atPath: dest.path) {
+            throw MycellmError.inferenceError("File already exists: \(url.lastPathComponent)")
+        }
+        try FileManager.default.copyItem(at: url, to: dest)
+
+        // Exclude from iCloud backup
+        var resourceValues = URLResourceValues()
+        resourceValues.isExcludedFromBackup = true
+        var destMutable = dest
+        try destMutable.setResourceValues(resourceValues)
+
+        scanLocalModels()
+    }
+
     /// Total size of all downloaded models.
     var totalStorageUsed: UInt64 {
         localFiles.reduce(0) { $0 + $1.sizeBytes }

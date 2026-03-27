@@ -59,6 +59,7 @@ final class NodeService: @unchecked Sendable {
     // MARK: - Models
     let modelManager = ModelManager()
     let modelDownloader = ModelDownloader()
+    let relayManager = RelayManager()
 
     // MARK: - Services
     private let httpServer = HTTPServer()
