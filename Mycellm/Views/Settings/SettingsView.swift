@@ -1,5 +1,6 @@
 import SwiftUI
 import StoreKit
+import SafariServices
 
 struct SettingsView: View {
     @Environment(NodeService.self) private var node
@@ -7,6 +8,7 @@ struct SettingsView: View {
     @State private var preferences = Preferences.shared
     @State private var showingExportKey = false
     @State private var showingTipJar = false
+    @State private var safariURL: URL?
     @State private var tipJar = TipJarManager()
 
     var body: some View {
@@ -30,6 +32,10 @@ struct SettingsView: View {
             .background(Color.voidBlack)
             .navigationTitle("Settings")
             .font(.mono(13))
+            .sheet(item: $safariURL) { url in
+                SafariView(url: url)
+                    .ignoresSafeArea()
+            }
         }
     }
 
@@ -389,15 +395,19 @@ struct SettingsView: View {
         Section {
             VStack(spacing: 16) {
                 HStack(spacing: 16) {
-                    Link("Privacy Policy", destination: URL(string: NetworkConfig.privacyURL)!)
-                        .font(.mono(12))
-                        .foregroundStyle(Color.relayBlue)
+                    Button("Privacy Policy") {
+                        safariURL = URL(string: NetworkConfig.privacyURL)
+                    }
+                    .font(.mono(12))
+                    .foregroundStyle(Color.relayBlue)
                     Text("|")
                         .font(.mono(12))
                         .foregroundStyle(Color.consoleDim)
-                    Link("Terms of Service", destination: URL(string: NetworkConfig.termsURL)!)
-                        .font(.mono(12))
-                        .foregroundStyle(Color.relayBlue)
+                    Button("Terms of Service") {
+                        safariURL = URL(string: NetworkConfig.termsURL)
+                    }
+                    .font(.mono(12))
+                    .foregroundStyle(Color.relayBlue)
                 }
 
                 VStack(spacing: 8) {
@@ -497,4 +507,24 @@ private struct TipJarSheet: View {
             }
         }
     }
+}
+
+// MARK: - In-App Safari
+
+extension URL: @retroactive Identifiable {
+    public var id: String { absoluteString }
+}
+
+private struct SafariView: UIViewControllerRepresentable {
+    let url: URL
+
+    func makeUIViewController(context: Context) -> SFSafariViewController {
+        let config = SFSafariViewController.Configuration()
+        config.barCollapsingEnabled = true
+        let vc = SFSafariViewController(url: url, configuration: config)
+        vc.preferredControlTintColor = UIColor(Color.sporeGreen)
+        return vc
+    }
+
+    func updateUIViewController(_ uiViewController: SFSafariViewController, context: Context) {}
 }
