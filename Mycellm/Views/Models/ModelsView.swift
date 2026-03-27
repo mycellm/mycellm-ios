@@ -39,29 +39,35 @@ struct ModelsView: View {
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 0) {
-                // Tab bar
-                tabBar
-
-                ScrollView {
-                    VStack(spacing: 20) {
-                        switch selectedTab {
-                        case .onDisk:
-                            modelsOnDiskSection
-                        case .huggingFace:
-                            searchSection
-                            suggestedModelsSection
-                        case .apiProvider:
-                            apiProviderSection
-                        case .relay:
-                            relaySection
-                        }
+            ScrollView {
+                VStack(spacing: 20) {
+                    switch selectedTab {
+                    case .onDisk:
+                        modelsOnDiskSection
+                    case .huggingFace:
+                        searchSection
+                        suggestedModelsSection
+                    case .apiProvider:
+                        apiProviderSection
+                    case .relay:
+                        relaySection
                     }
-                    .padding(.vertical)
                 }
+                .padding(.vertical)
             }
             .background(Color.voidBlack)
             .navigationTitle("Models")
+            .toolbar {
+                ToolbarItem(placement: .principal) {
+                    Picker("", selection: $selectedTab) {
+                        ForEach(ModelTab.allCases, id: \.self) { tab in
+                            Text(tab.rawValue).tag(tab)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(maxWidth: 320)
+                }
+            }
             .onAppear { modelManager.scanLocalModels() }
             .alert("Delete Model?", isPresented: $showDeleteConfirm) {
                 Button("Delete", role: .destructive) {
@@ -93,46 +99,6 @@ struct ModelsView: View {
                     importError = error.localizedDescription
                 }
             }
-        }
-    }
-
-    // MARK: - Tab Bar
-
-    private var tabBar: some View {
-        HStack(spacing: 0) {
-            ForEach(ModelTab.allCases, id: \.self) { tab in
-                Button {
-                    selectedTab = tab
-                } label: {
-                    VStack(spacing: 4) {
-                        Image(systemName: tabIcon(tab))
-                            .font(.system(size: 14))
-                        Text(tab.rawValue)
-                            .font(.mono(10))
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 8)
-                    .foregroundStyle(selectedTab == tab ? Color.sporeGreen : Color.consoleDim)
-                    .overlay(alignment: .bottom) {
-                        if selectedTab == tab {
-                            Rectangle()
-                                .fill(Color.sporeGreen)
-                                .frame(height: 2)
-                        }
-                    }
-                }
-            }
-        }
-        .padding(.horizontal)
-        .background(Color.cardBackground)
-    }
-
-    private func tabIcon(_ tab: ModelTab) -> String {
-        switch tab {
-        case .onDisk: "internaldrive"
-        case .huggingFace: "magnifyingglass"
-        case .apiProvider: "cloud"
-        case .relay: "display"
         }
     }
 
