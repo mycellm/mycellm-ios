@@ -11,19 +11,19 @@ enum NetworkMode: String, Sendable, CaseIterable, Identifiable {
 
     var displayName: String {
         switch self {
-        case .standalone: "Standalone"
-        case .public: "Public Network"
-        case .private: "Private Network"
-        case .fleet: "Fleet Managed"
+        case .standalone: String(localized: "Standalone")
+        case .public: String(localized: "Public Network")
+        case .private: String(localized: "Private Network")
+        case .fleet: String(localized: "Fleet Managed")
         }
     }
 
     var description: String {
         switch self {
-        case .standalone: "Personal LLM, no network"
-        case .public: "Contribute to the public network"
-        case .private: "Organization or team network"
-        case .fleet: "Remotely managed node"
+        case .standalone: String(localized: "Personal LLM, no network")
+        case .public: String(localized: "Contribute to the public network")
+        case .private: String(localized: "Organization or team network")
+        case .fleet: String(localized: "Remotely managed node")
         }
     }
 

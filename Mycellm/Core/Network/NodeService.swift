@@ -326,27 +326,27 @@ struct ActivityItem: Identifiable, Sendable {
 
     var description: String {
         switch kind {
-        case .nodeStarted: "Node started"
-        case .nodeStopped: "Node stopped"
-        case .networkModeChanged(let mode): "Switched to \(mode.displayName)"
-        case .modelLoaded(let name): "Loaded \(name)"
-        case .modelUnloaded(let name): "Unloaded \(name)"
-        case .inferenceCompleted(let model, let tokens): "Served \(tokens) tokens (\(model))"
-        case .httpServerStarted(let port): "HTTP API on :\(port)"
-        case .creditEarned(let amount, let from): String(format: "+%.3f credits from %@", amount, from)
-        case .creditSpent(let amount, let to): String(format: "-%.3f credits to %@", amount, to)
-        case .peerConnected(let peer): "Connected: \(peer)"
-        case .peerDisconnected(let peer): "Disconnected: \(peer)"
+        case .nodeStarted: String(localized: "Node started")
+        case .nodeStopped: String(localized: "Node stopped")
+        case .networkModeChanged(let mode): String(localized: "Switched to \(mode.displayName)")
+        case .modelLoaded(let name): String(localized: "Loaded \(name)")
+        case .modelUnloaded(let name): String(localized: "Unloaded \(name)")
+        case .inferenceCompleted(let model, let tokens): String(localized: "Served \(tokens) tokens (\(model))")
+        case .httpServerStarted(let port): String(localized: "HTTP API on :\(port)")
+        case .creditEarned(let amount, let from): String(localized: "+\(String(format: "%.3f", amount)) credits from \(from)")
+        case .creditSpent(let amount, let to): String(localized: "-\(String(format: "%.3f", amount)) credits to \(to)")
+        case .peerConnected(let peer): String(localized: "Connected: \(peer)")
+        case .peerDisconnected(let peer): String(localized: "Disconnected: \(peer)")
         case .error(let msg): msg
         }
     }
 
     var relativeTime: String {
         let seconds = Int(Date().timeIntervalSince(timestamp))
-        if seconds < 5 { return "now" }
-        if seconds < 60 { return "\(seconds)s ago" }
-        if seconds < 3600 { return "\(seconds / 60)m ago" }
-        return "\(seconds / 3600)h ago"
+        if seconds < 5 { return String(localized: "now") }
+        if seconds < 60 { return "\(seconds)\(String(localized: "s ago"))" }
+        if seconds < 3600 { return "\(seconds / 60)\(String(localized: "m ago"))" }
+        return "\(seconds / 3600)\(String(localized: "h ago"))"
     }
 }
 

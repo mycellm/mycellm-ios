@@ -37,6 +37,8 @@ targets:
     resources:
       - path: Mycellm/Resources/Fonts
         buildPhase: resources
+      - path: Mycellm/Resources/Localizable.xcstrings
+        buildPhase: resources
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.mycellm.app

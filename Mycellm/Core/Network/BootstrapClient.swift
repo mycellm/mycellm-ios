@@ -9,19 +9,31 @@ actor BootstrapClient {
     static let retryDelays: [TimeInterval] = [2, 5, 15, 30, 60]
 
     enum ConnectionState: String, Sendable {
-        case disconnected = "Disconnected"
-        case connecting = "Connecting…"
-        case handshaking = "Handshaking…"
-        case connected = "Connected"
-        case reconnecting = "Reconnecting…"
-        case fallbackHTTP = "HTTP Fallback"
-        case failed = "Failed"
+        case disconnected, connecting, handshaking, connected, reconnecting, fallbackHTTP, failed
+
+        var displayName: String {
+            switch self {
+            case .disconnected: String(localized: "Disconnected")
+            case .connecting: String(localized: "Connecting…")
+            case .handshaking: String(localized: "Handshaking…")
+            case .connected: String(localized: "Connected")
+            case .reconnecting: String(localized: "Reconnecting…")
+            case .fallbackHTTP: String(localized: "HTTP Fallback")
+            case .failed: String(localized: "Failed")
+            }
+        }
     }
 
     enum Transport: String, Sendable {
-        case quic = "QUIC"
-        case http = "HTTP"
-        case none = "—"
+        case quic, http, none
+
+        var displayName: String {
+            switch self {
+            case .quic: "QUIC"
+            case .http: "HTTP"
+            case .none: "—"
+            }
+        }
     }
 
     private(set) var state: ConnectionState = .disconnected

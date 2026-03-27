@@ -93,11 +93,11 @@ struct PeersView: View {
                         Circle()
                             .fill(bootstrapDotColor)
                             .frame(width: 6, height: 6)
-                        Text(node.connection.bootstrapState.rawValue)
+                        Text(node.connection.bootstrapState.displayName)
                             .font(.mono(9))
                             .foregroundStyle(Color.consoleDim)
                         if node.connection.bootstrapTransport != .none {
-                            Text(node.connection.bootstrapTransport.rawValue)
+                            Text(node.connection.bootstrapTransport.displayName)
                                 .font(.mono(8))
                                 .foregroundStyle(Color.consoleDim)
                                 .padding(.horizontal, 4)
@@ -210,7 +210,7 @@ struct PeersView: View {
         return HStack(spacing: 3) {
             Image(systemName: icon)
                 .font(.system(size: 8))
-            Text(level.rawValue)
+            Text(level.displayName)
                 .font(.mono(9))
         }
         .foregroundStyle(color)
@@ -294,7 +294,7 @@ struct PeersView: View {
                     Picker("Trust Level", selection: $joinTrust) {
                         ForEach(NetworkMembership.TrustLevel.allCases) { level in
                             VStack(alignment: .leading) {
-                                Text(level.rawValue)
+                                Text(level.displayName)
                             }
                             .tag(level)
                         }

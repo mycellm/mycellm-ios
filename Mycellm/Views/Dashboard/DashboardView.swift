@@ -129,11 +129,11 @@ struct DashboardView: View {
             Circle()
                 .fill(bootstrapStatusColor)
                 .frame(width: 6, height: 6)
-            Text(node.connection.bootstrapState.rawValue)
+            Text(node.connection.bootstrapState.displayName)
                 .font(.mono(9))
                 .foregroundStyle(Color.consoleDim)
             if node.connection.bootstrapTransport != .none {
-                Text(node.connection.bootstrapTransport.rawValue)
+                Text(node.connection.bootstrapTransport.displayName)
                     .font(.mono(8))
                     .foregroundStyle(Color.consoleDim)
             }

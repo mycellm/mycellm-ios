@@ -21,17 +21,25 @@ struct NetworkMembership: Identifiable, Codable, Sendable {
     var isConnected: Bool = false
 
     enum TrustLevel: String, Codable, Sendable, CaseIterable, Identifiable {
-        case strict  = "Strict"    // Verify signatures + enforce balance
-        case relaxed = "Relaxed"   // Verify signatures, don't enforce balance
-        case honor   = "Honor"     // Skip verification (trusted group)
+        case strict = "Strict"
+        case relaxed = "Relaxed"
+        case honor = "Honor"
 
         var id: String { rawValue }
 
+        var displayName: String {
+            switch self {
+            case .strict: String(localized: "Strict")
+            case .relaxed: String(localized: "Relaxed")
+            case .honor: String(localized: "Honor")
+            }
+        }
+
         var description: String {
             switch self {
-            case .strict: "Verify all receipts and enforce credit balance"
-            case .relaxed: "Verify receipts but allow negative balance"
-            case .honor: "Trust all peers (homelab, close group)"
+            case .strict: String(localized: "Verify all receipts and enforce credit balance")
+            case .relaxed: String(localized: "Verify receipts but allow negative balance")
+            case .honor: String(localized: "Trust all peers (homelab, close group)")
             }
         }
     }

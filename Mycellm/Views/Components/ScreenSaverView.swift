@@ -163,9 +163,9 @@ struct ScreenSaverView: View {
 
     private var currentStatLine: String {
         let lines = [
-            "\(connectedPeers) peer\(connectedPeers == 1 ? "" : "s") online",
-            "\(loadedModels) model\(loadedModels == 1 ? "" : "s") available",
-            tokensPerSec > 0 ? String(format: "%.1f tok/s", tokensPerSec) : "idle",
+            String(localized: "\(connectedPeers) peer(s) online"),
+            String(localized: "\(loadedModels) model(s) available"),
+            tokensPerSec > 0 ? String(localized: "\(String(format: "%.1f", tokensPerSec)) tok/s") : String(localized: "idle"),
         ]
         return lines[statIndex % lines.count]
     }
