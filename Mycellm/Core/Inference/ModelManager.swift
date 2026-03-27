@@ -153,7 +153,7 @@ final class ModelManager: @unchecked Sendable {
 
         // Store config for persistence
         let config = APIModelConfig(name: name, apiBase: base, apiKey: apiKey, apiModel: apiModel, ctxLen: ctxLen)
-        var saved = loadSavedAPIConfigs()
+        var saved = savedAPIConfigs()
         saved.removeAll { $0.name == name }
         saved.append(config)
         saveAPIConfigs(saved)
@@ -168,7 +168,7 @@ final class ModelManager: @unchecked Sendable {
     /// Remove an API-backed model.
     func removeAPIModel(name: String) {
         loadedModels.removeAll { $0.name == name && $0.filename.hasPrefix("api:") }
-        var saved = loadSavedAPIConfigs()
+        var saved = savedAPIConfigs()
         saved.removeAll { $0.name == name }
         saveAPIConfigs(saved)
     }
@@ -181,7 +181,8 @@ final class ModelManager: @unchecked Sendable {
         let ctxLen: Int
     }
 
-    func loadSavedAPIConfigs() -> [APIModelConfig] {
+    /// Publicly accessible for REST API listing.
+    func savedAPIConfigs() -> [APIModelConfig] {
         guard let data = UserDefaults.standard.data(forKey: "api_model_configs"),
               let configs = try? JSONDecoder().decode([APIModelConfig].self, from: data) else { return [] }
         return configs

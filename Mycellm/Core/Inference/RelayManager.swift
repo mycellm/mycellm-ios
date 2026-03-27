@@ -1,7 +1,7 @@
 import Foundation
 
 /// Manages relay backends — discovers and registers models from OpenAI-compatible LAN endpoints.
-/// Port of the Python RelayManager, simplified for iOS.
+/// Port of the Python RelayManager with api_key, max_concurrent, and background polling.
 @Observable
 final class RelayManager: @unchecked Sendable {
 
@@ -9,32 +9,36 @@ final class RelayManager: @unchecked Sendable {
         let id = UUID()
         var url: String
         var name: String
+        var apiKey: String = ""
+        var maxConcurrent: Int = 32
         var online: Bool = false
         var error: String = ""
         var models: [String] = []
     }
 
     private(set) var relays: [RelayEndpoint] = []
+    private var pollTask: Task<Void, Never>?
+    private var pollInterval: TimeInterval = 60
 
     init() {
         loadSaved()
     }
 
-    /// Add a relay backend and discover its models.
+    // MARK: - CRUD
+
     @discardableResult
-    func add(url: String, name: String = "") async throws -> RelayEndpoint {
+    func add(url: String, name: String = "", apiKey: String = "", maxConcurrent: Int = 32) async throws -> RelayEndpoint {
         var normalized = url.trimmingCharacters(in: .whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         if normalized.hasSuffix("/v1") {
             normalized = String(normalized.dropLast(3))
         }
 
-        // Check if already added
         if relays.contains(where: { $0.url == normalized }) {
             throw MycellmError.transportError("Relay already added: \(normalized)")
         }
 
         let label = name.isEmpty ? labelFromURL(normalized) : name
-        var relay = RelayEndpoint(url: normalized, name: label)
+        var relay = RelayEndpoint(url: normalized, name: label, apiKey: apiKey, maxConcurrent: maxConcurrent)
         relay = await discoverModels(relay)
         relays.append(relay)
         save()
@@ -46,20 +50,40 @@ final class RelayManager: @unchecked Sendable {
         return relay
     }
 
-    /// Remove a relay.
     func remove(url: String) {
         relays.removeAll { $0.url == url }
         save()
     }
 
-    /// Refresh models from all relays.
+    // MARK: - Refresh
+
     func refreshAll() async {
         for i in relays.indices {
             relays[i] = await discoverModels(relays[i])
         }
     }
 
-    /// Discover models from a relay's /v1/models endpoint.
+    // MARK: - Polling
+
+    func startPolling(interval: TimeInterval = 60) {
+        pollInterval = interval
+        guard pollTask == nil else { return }
+        pollTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(self?.pollInterval ?? 60))
+                guard !Task.isCancelled else { break }
+                await self?.refreshAll()
+            }
+        }
+    }
+
+    func stopPolling() {
+        pollTask?.cancel()
+        pollTask = nil
+    }
+
+    // MARK: - Discovery
+
     private func discoverModels(_ relay: RelayEndpoint) async -> RelayEndpoint {
         var updated = relay
         guard let url = URL(string: "\(relay.url)/v1/models") else {
@@ -70,12 +94,27 @@ final class RelayManager: @unchecked Sendable {
 
         var request = URLRequest(url: url)
         request.timeoutInterval = 10
+        if !relay.apiKey.isEmpty {
+            request.setValue("Bearer \(relay.apiKey)", forHTTPHeaderField: "Authorization")
+        }
 
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
-            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            guard let http = response as? HTTPURLResponse else {
                 updated.online = false
-                updated.error = "HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0)"
+                updated.error = "No response"
+                return updated
+            }
+
+            if http.statusCode == 401 {
+                updated.online = false
+                updated.error = "Authentication failed (401)"
+                return updated
+            }
+
+            guard http.statusCode == 200 else {
+                updated.online = false
+                updated.error = "HTTP \(http.statusCode)"
                 return updated
             }
 
@@ -104,19 +143,40 @@ final class RelayManager: @unchecked Sendable {
         return host.components(separatedBy: ".").first ?? host
     }
 
+    // MARK: - Status (for REST API)
+
+    func status() -> [[String: Any]] {
+        relays.map { r in
+            [
+                "url": r.url,
+                "name": r.name,
+                "online": r.online,
+                "error": r.error,
+                "models": r.models,
+                "model_count": r.models.count,
+            ] as [String: Any]
+        }
+    }
+
     // MARK: - Persistence
 
     private func save() {
-        let data = relays.map { ["url": $0.url, "name": $0.name] }
+        let data: [[String: Any]] = relays.map {
+            ["url": $0.url, "name": $0.name, "api_key": $0.apiKey, "max_concurrent": $0.maxConcurrent]
+        }
         UserDefaults.standard.set(data, forKey: "relay_backends")
     }
 
     private func loadSaved() {
-        guard let saved = UserDefaults.standard.array(forKey: "relay_backends") as? [[String: String]] else { return }
-        relays = saved.map { RelayEndpoint(url: $0["url"] ?? "", name: $0["name"] ?? "") }
-        // Discover in background
-        Task {
-            await refreshAll()
+        guard let saved = UserDefaults.standard.array(forKey: "relay_backends") as? [[String: Any]] else { return }
+        relays = saved.map {
+            RelayEndpoint(
+                url: $0["url"] as? String ?? "",
+                name: $0["name"] as? String ?? "",
+                apiKey: $0["api_key"] as? String ?? "",
+                maxConcurrent: $0["max_concurrent"] as? Int ?? 32
+            )
         }
+        Task { await refreshAll() }
     }
 }
