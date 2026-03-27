@@ -86,7 +86,20 @@ enum ModelRoutes {
         return suggestions
     }
 
+    private struct SearchResult: Sendable {
+        let repoId: String
+        let name: String
+        let filename: String
+        let downloads: Int
+        let hasQ4: Bool
+
+        var dict: [String: Any] {
+            ["repo_id": repoId, "name": name, "filename": filename, "downloads": downloads, "has_q4": hasQ4]
+        }
+    }
+
     /// Search HuggingFace for GGUF models.
+    /// The search endpoint doesn't return file listings, so we fetch details for top results.
     static func searchHuggingFace(query: String) async -> [[String: Any]] {
         let searchQuery = query.isEmpty ? "gguf" : "\(query) gguf"
         guard let encoded = searchQuery.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
@@ -98,25 +111,38 @@ enum ModelRoutes {
             let (data, _) = try await URLSession.shared.data(from: url)
             guard let models = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return [] }
 
-            return models.compactMap { model -> [String: Any]? in
-                guard let modelId = model["modelId"] as? String,
-                      let downloads = model["downloads"] as? Int else { return nil }
+            let results = await withTaskGroup(of: SearchResult?.self) { group in
+                for model in models.prefix(15) {
+                    guard let modelId = model["modelId"] as? String,
+                          let downloads = model["downloads"] as? Int else { continue }
+                    let name = modelId.components(separatedBy: "/").last ?? modelId
 
-                // Find GGUF files in siblings
-                let siblings = model["siblings"] as? [[String: Any]] ?? []
-                let ggufFiles = siblings
-                    .compactMap { $0["rfilename"] as? String }
-                    .filter { $0.hasSuffix(".gguf") && ($0.contains("Q4_K_M") || $0.contains("q4_k_m")) }
+                    group.addTask {
+                        guard let detailURL = URL(string: "https://huggingface.co/api/models/\(modelId)") else {
+                            return SearchResult(repoId: modelId, name: name, filename: "", downloads: downloads, hasQ4: false)
+                        }
 
-                let filename = ggufFiles.first ?? ""
-                return [
-                    "repo_id": modelId,
-                    "name": modelId.components(separatedBy: "/").last ?? modelId,
-                    "filename": filename,
-                    "downloads": downloads,
-                    "has_q4": !ggufFiles.isEmpty,
-                ]
+                        var ggufFiles: [String] = []
+                        if let (detailData, _) = try? await URLSession.shared.data(from: detailURL),
+                           let detail = try? JSONSerialization.jsonObject(with: detailData) as? [String: Any] {
+                            let siblings = detail["siblings"] as? [[String: Any]] ?? []
+                            ggufFiles = siblings
+                                .compactMap { $0["rfilename"] as? String }
+                                .filter { $0.hasSuffix(".gguf") && ($0.contains("Q4_K_M") || $0.contains("q4_k_m")) }
+                        }
+
+                        return SearchResult(repoId: modelId, name: name, filename: ggufFiles.first ?? "", downloads: downloads, hasQ4: !ggufFiles.isEmpty)
+                    }
+                }
+
+                var collected: [SearchResult] = []
+                for await result in group {
+                    if let r = result { collected.append(r) }
+                }
+                return collected.sorted { $0.downloads > $1.downloads }
             }
+
+            return results.map(\.dict)
         } catch {
             return []
         }
