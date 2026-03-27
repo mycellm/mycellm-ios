@@ -24,6 +24,19 @@ struct PeersView: View {
             }
             .background(Color.voidBlack)
             .navigationTitle("Network")
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    if node.networkRegistry.canJoinNewNetworks {
+                        Button {
+                            showJoinSheet = true
+                        } label: {
+                            Image(systemName: "plus.circle.fill")
+                                .font(.system(size: 20))
+                                .foregroundStyle(Color.sporeGreen)
+                        }
+                    }
+                }
+            }
             .sheet(isPresented: $showJoinSheet) {
                 joinNetworkSheet
             }
@@ -34,23 +47,7 @@ struct PeersView: View {
 
     private var networksSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                SectionHeader(title: "Networks", count: node.networkRegistry.memberships.count)
-                Spacer()
-                if node.networkRegistry.canJoinNewNetworks {
-                    Button {
-                        showJoinSheet = true
-                    } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: "plus.circle.fill")
-                                .font(.system(size: 12))
-                            Text("Join")
-                                .font(.mono(11, weight: .medium))
-                        }
-                        .foregroundStyle(Color.sporeGreen)
-                    }
-                }
-            }
+            SectionHeader(title: "Networks", count: node.networkRegistry.memberships.count)
 
             ForEach(node.networkRegistry.memberships) { membership in
                 networkCard(membership)
@@ -335,6 +332,6 @@ struct PeersView: View {
                 }
             }
         }
-        .presentationDetents([.medium, .large])
+        .presentationDetents([.large])
     }
 }

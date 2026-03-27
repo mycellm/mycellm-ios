@@ -95,10 +95,13 @@ struct ModelsView: View {
                 switch source {
                 case .huggingFace:
                     HuggingFaceSheet(modelManager: modelManager, downloader: downloader)
+                        .presentationDetents([.large])
                 case .apiProvider:
                     APIProviderSheet(modelManager: modelManager)
+                        .presentationDetents([.large])
                 case .relay:
                     RelaySheet(relayManager: node.relayManager)
+                        .presentationDetents([.large])
                 }
             }
         }
