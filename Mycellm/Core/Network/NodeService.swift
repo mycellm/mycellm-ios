@@ -130,7 +130,7 @@ final class NodeService: @unchecked Sendable {
             }
         }
 
-        modelManager.scanLocalModels()
+        await MainActor.run { modelManager.scanLocalModels() }
         relayManager.startPolling()
 
         Task {

@@ -224,7 +224,7 @@ actor HTTPServer {
         router.post("/v1/node/models/remove-config") { request, _ -> Response in
             let body = try await Self.parseBody(request)
             let name = body["model"] as? String ?? ""
-            nodeService.modelManager.removeAPIModel(name: name)
+            await MainActor.run { nodeService.modelManager.removeAPIModel(name: name) }
             return try Self.json(["status": "removed", "model": name])
         }
 
@@ -233,7 +233,7 @@ actor HTTPServer {
             let filename = body["filename"] as? String ?? ""
             let mm = nodeService.modelManager
             if let file = mm.localFiles.first(where: { $0.filename == filename }) {
-                mm.deleteModel(file: file)
+                await MainActor.run { mm.deleteModel(file: file) }
                 return try Self.json(["status": "deleted", "filename": filename, "size_gb": Double(file.sizeBytes) / 1_073_741_824.0])
             }
             return try Self.error("File not found: \(filename)", status: .notFound)

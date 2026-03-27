@@ -46,6 +46,7 @@ final class ModelManager: @unchecked Sendable {
     }
 
     /// Scan the models directory for GGUF files.
+    @MainActor
     func scanLocalModels() {
         isScanning = true
         defer { isScanning = false }
@@ -72,6 +73,7 @@ final class ModelManager: @unchecked Sendable {
     }
 
     /// Load a model from disk into the inference engine.
+    @MainActor
     func loadModel(file: LocalModelFile, scope: String = "home") async throws {
         isLoading = true
         loadingModelName = file.filename
@@ -86,8 +88,7 @@ final class ModelManager: @unchecked Sendable {
             loadedModels = [loaded] // Only one model at a time on iOS
             isLoading = false
             loadingModelName = nil
-            // Remember for auto-load on next launch
-            await MainActor.run { Preferences.shared.lastLoadedModel = file.filename }
+            Preferences.shared.lastLoadedModel = file.filename
             scanLocalModels()
         } catch {
             isLoading = false
@@ -98,6 +99,7 @@ final class ModelManager: @unchecked Sendable {
     }
 
     /// Unload a model.
+    @MainActor
     func unloadModel(_ model: LoadedModel) async {
         await engine.unloadModel()
         loadedModels.removeAll { $0.id == model.id }
@@ -116,6 +118,7 @@ final class ModelManager: @unchecked Sendable {
     }
 
     /// Delete a model file from disk.
+    @MainActor
     func deleteModel(file: LocalModelFile) {
         try? FileManager.default.removeItem(atPath: file.path)
         scanLocalModels()
@@ -166,6 +169,7 @@ final class ModelManager: @unchecked Sendable {
     }
 
     /// Remove an API-backed model.
+    @MainActor
     func removeAPIModel(name: String) {
         loadedModels.removeAll { $0.name == name && $0.filename.hasPrefix("api:") }
         var saved = savedAPIConfigs()
@@ -196,6 +200,7 @@ final class ModelManager: @unchecked Sendable {
 
     /// Import a GGUF file from an external URL (Files.app, iCloud, USB drive).
     /// Copies the file into the models directory with security-scoped access.
+    @MainActor
     func importFile(from url: URL) throws {
         let accessing = url.startAccessingSecurityScopedResource()
         defer { if accessing { url.stopAccessingSecurityScopedResource() } }
