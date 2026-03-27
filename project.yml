@@ -40,6 +40,8 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.mycellm.app
+        MARKETING_VERSION: "1.0.0"
+        CURRENT_PROJECT_VERSION: "1"
         # CODE_SIGN_ENTITLEMENTS: Mycellm/Mycellm.entitlements  # deferred — needs provisioning profile
         GENERATE_INFOPLIST_FILE: true
         INFOPLIST_FILE: Mycellm/Info.plist
