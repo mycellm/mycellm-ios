@@ -292,12 +292,58 @@ actor BootstrapClient {
             return nil
         case .inferenceReq:
             return await onInferenceRequest?(envelope)
+        case .inferenceStream, .inferenceDone, .inferenceResp, .error:
+            // Route streaming/response messages to pending request continuations
+            if let qt = quicTransport, await qt.handleStreamMessage(envelope) {
+                return nil
+            }
+            Log.bootstrap.info(" No pending request for \(envelope.type.rawValue) id=\(envelope.id)")
+            return nil
+        case .peerExchange:
+            Log.bootstrap.info(" Peer exchange received (\(envelope.payload["peers"]?.arrayValue?.count ?? 0) peers)")
+            return nil
         case .ping:
             Log.bootstrap.info(" Responding to ping")
             return MessageBuilders.pong(from: peerId, requestId: envelope.id)
         default:
             Log.bootstrap.info(" Unhandled message type: \(envelope.type.rawValue)")
             return nil
+        }
+    }
+
+    // MARK: - Streaming Inference
+
+    /// Send a streaming inference request over QUIC. Yields text chunks.
+    func streamInference(
+        model: String,
+        messages: [[String: String]],
+        temperature: Double = 0.7,
+        maxTokens: Int = 2048
+    ) -> AsyncThrowingStream<String, Error> {
+        AsyncThrowingStream { continuation in
+            Task {
+                guard let qt = self.quicTransport, await qt.isConnected else {
+                    continuation.finish(throwing: MycellmError.transportError("Not connected via QUIC"))
+                    return
+                }
+
+                let req = MessageBuilders.inferenceRequest(
+                    from: self.peerId, model: model, messages: messages,
+                    temperature: temperature, maxTokens: maxTokens, stream: true
+                )
+
+                do {
+                    for try await chunk in await qt.requestStream(req) {
+                        let text = chunk.payload["text"]?.stringValue ?? ""
+                        if !text.isEmpty {
+                            continuation.yield(text)
+                        }
+                    }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
         }
     }
 

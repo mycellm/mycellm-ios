@@ -164,6 +164,56 @@ actor QUICTransport {
         }
     }
 
+    // MARK: - Streaming Request
+
+    /// Pending stream continuations keyed by request ID.
+    private var streamContinuations: [String: AsyncThrowingStream<MessageEnvelope, Error>.Continuation] = [:]
+
+    /// Send a streaming inference request and yield response chunks as they arrive.
+    /// The returned stream emits INFERENCE_STREAM messages until INFERENCE_DONE.
+    func requestStream(_ message: MessageEnvelope) -> AsyncThrowingStream<MessageEnvelope, Error> {
+        let requestId = message.id
+        return AsyncThrowingStream { continuation in
+            Task {
+                self.streamContinuations[requestId] = continuation
+                do {
+                    try await self.send(message)
+                } catch {
+                    self.streamContinuations.removeValue(forKey: requestId)
+                    continuation.finish(throwing: error)
+                }
+                continuation.onTermination = { _ in
+                    Task { await self.cancelStream(requestId) }
+                }
+            }
+        }
+    }
+
+    /// Route an incoming streaming message to the correct continuation.
+    func handleStreamMessage(_ envelope: MessageEnvelope) -> Bool {
+        guard let continuation = streamContinuations[envelope.id] else { return false }
+        switch envelope.type {
+        case .inferenceStream:
+            continuation.yield(envelope)
+            return true
+        case .inferenceDone:
+            continuation.finish()
+            streamContinuations.removeValue(forKey: envelope.id)
+            return true
+        case .error:
+            let msg = envelope.payload["error_message"]?.stringValue ?? "Peer error"
+            continuation.finish(throwing: MycellmError.transportError(msg))
+            streamContinuations.removeValue(forKey: envelope.id)
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func cancelStream(_ requestId: String) {
+        streamContinuations.removeValue(forKey: requestId)
+    }
+
     var isConnected: Bool { connected }
 }
 

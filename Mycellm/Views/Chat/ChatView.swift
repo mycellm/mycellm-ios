@@ -746,12 +746,37 @@ struct ChatView: View {
 
         let model = Preferences.shared.remoteModel.isEmpty ? "default" : Preferences.shared.remoteModel
 
+        // Try QUIC streaming first (token-by-token), fall back to HTTP
+        let useQUICStream = node.connection.bootstrapState == .connected && node.connection.bootstrapTransport == .quic
+
         streamTask = Task {
             do {
-                let result = try await remoteClient.completeWithMetadata(
-                    model: model, messages: Array(chatMessages)
-                )
-                applyNetworkResult(result, to: responseId, model: model)
+                if useQUICStream {
+                    // Stream over QUIC — tokens arrive one-by-one
+                    let rawMessages = Array(chatMessages).map { ["role": $0.role, "content": $0.content] }
+                    var tokenCount = 0
+                    for try await text in await node.bootstrapClient.streamInference(
+                        model: model, messages: rawMessages
+                    ) {
+                        guard !Task.isCancelled else { break }
+                        mutate(responseId) { $0.content += text }
+                        tokenCount += 1
+                    }
+                    mutate(responseId) { msg in
+                        msg.tokenCount = tokenCount
+                        let elapsed = Date().timeIntervalSince(msg.startTime)
+                        msg.tokensPerSecond = elapsed > 0 ? Double(tokenCount) / elapsed : 0
+                        msg.isStreaming = false
+                        msg.endTime = Date()
+                        msg.routedVia = "quic"
+                    }
+                } else {
+                    // HTTP fallback — full response at once
+                    let result = try await remoteClient.completeWithMetadata(
+                        model: model, messages: Array(chatMessages)
+                    )
+                    applyNetworkResult(result, to: responseId, model: model)
+                }
             } catch is CancellationError {
                 mutate(responseId) { $0.endTime = Date(); $0.isStreaming = false }
             } catch {
@@ -763,7 +788,7 @@ struct ChatView: View {
 
         // Connection timeout
         Task {
-            try? await Task.sleep(for: .seconds(30))
+            try? await Task.sleep(for: .seconds(60))
             guard isGenerating, let i = idx(for: responseId),
                   messages[i].content.isEmpty else { return }
             mutate(responseId) { msg in
