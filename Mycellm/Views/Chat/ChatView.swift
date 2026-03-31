@@ -757,9 +757,10 @@ struct ChatView: View {
                     var tokenCount = 0
                     var quicSucceeded = false
                     do {
-                        for try await text in await node.bootstrapClient.streamInferenceWithTimeout(
+                        let quicStream = try await node.bootstrapClient.streamInferenceWithTimeout(
                             model: model, messages: rawMessages
-                        ) {
+                        )
+                        for try await text in quicStream {
                             guard !Task.isCancelled else { break }
                             mutate(responseId) { $0.content += text }
                             tokenCount += 1

@@ -348,49 +348,53 @@ actor BootstrapClient {
         }
     }
 
-    /// Timeout-wrapped streaming: yields text chunks with a per-chunk deadline.
-    /// First chunk must arrive within chunkTimeout; subsequent chunks reset the timer.
+    /// Streaming with overall timeout. If no tokens arrive within chunkTimeout
+    /// seconds, the stream is cancelled and an error is thrown.
     func streamInferenceWithTimeout(
         model: String,
         messages: [[String: String]],
         temperature: Double = 0.7,
         maxTokens: Int = 2048,
         chunkTimeout: TimeInterval = 20
-    ) -> AsyncThrowingStream<String, Error> {
-        let inner = streamInference(model: model, messages: messages, temperature: temperature, maxTokens: maxTokens)
+    ) async throws -> AsyncThrowingStream<String, Error> {
+        guard let qt = quicTransport, await qt.isConnected else {
+            throw MycellmError.transportError("Not connected via QUIC")
+        }
+
+        let req = MessageBuilders.inferenceRequest(
+            from: peerId, model: model, messages: messages,
+            temperature: temperature, maxTokens: maxTokens, stream: true
+        )
+
+        let quicStream = await qt.requestStream(req)
+
         return AsyncThrowingStream { continuation in
             let task = Task {
-                var gotChunk = false
-                let deadline = UnsafeSendableBox(Date().addingTimeInterval(chunkTimeout))
-
-                // Watchdog: checks deadline periodically
-                let watchdog = Task {
-                    while !Task.isCancelled {
-                        try await Task.sleep(for: .seconds(2))
-                        if Date() > deadline.value {
-                            if !gotChunk {
-                                continuation.finish(throwing: MycellmError.transportError("No response from peer (\(Int(chunkTimeout))s)"))
-                            }
-                            return
+                do {
+                    for try await chunk in quicStream {
+                        guard !Task.isCancelled else { break }
+                        let text = chunk.payload["text"]?.stringValue ?? ""
+                        if !text.isEmpty {
+                            continuation.yield(text)
                         }
                     }
-                }
-
-                do {
-                    for try await text in inner {
-                        guard !Task.isCancelled else { break }
-                        gotChunk = true
-                        deadline.value = Date().addingTimeInterval(chunkTimeout)
-                        continuation.yield(text)
-                    }
-                    watchdog.cancel()
                     continuation.finish()
                 } catch {
-                    watchdog.cancel()
                     continuation.finish(throwing: error)
                 }
             }
-            continuation.onTermination = { _ in task.cancel() }
+
+            // Overall timeout — cancels the stream task
+            let timeout = Task {
+                try? await Task.sleep(for: .seconds(chunkTimeout))
+                task.cancel()
+                continuation.finish(throwing: MycellmError.transportError("No response from peer (\(Int(chunkTimeout))s)"))
+            }
+
+            continuation.onTermination = { _ in
+                task.cancel()
+                timeout.cancel()
+            }
         }
     }
 
