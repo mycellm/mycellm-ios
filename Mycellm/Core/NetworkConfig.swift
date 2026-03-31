@@ -28,5 +28,5 @@ enum NetworkConfig {
     static let keychainPrefix = "com.mycellm"
 
     /// Protocol/core version — must match the Python CLI version.
-    static let version = "0.2.0"
+    static let version = "0.2.2"
 }
