@@ -228,7 +228,7 @@ struct ModelsView: View {
                         .background(Color.poisonPurple.opacity(0.15))
                         .clipShape(Capsule())
                     Button {
-                        Task { await node.relayManager.remove(url: relay.url) }
+                        node.relayManager.remove(url: relay.url)
                     } label: {
                         Image(systemName: "xmark.circle.fill")
                             .font(.system(size: 14))
@@ -758,7 +758,7 @@ private struct RelaySheet: View {
                                 }
                                 Spacer()
                                 Button {
-                                    Task { await relayManager.remove(url: relay.url) }
+                                    relayManager.remove(url: relay.url)
                                 } label: {
                                     Image(systemName: "trash").font(.system(size: 12))
                                         .foregroundStyle(Color.computeRed)
