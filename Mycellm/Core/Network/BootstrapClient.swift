@@ -356,33 +356,39 @@ actor BootstrapClient {
         maxTokens: Int = 2048,
         chunkTimeout: TimeInterval = 30
     ) -> AsyncThrowingStream<String, Error> {
-        let inner = streamInference(model: model, messages: messages, temperature: temperature, maxTokens: maxTokens)
-        return AsyncThrowingStream { continuation in
+        AsyncThrowingStream { continuation in
             let task = Task {
-                var iterator = inner.makeAsyncIterator()
-                while true {
-                    do {
-                        let next = try await withThrowingTaskGroup(of: String?.self) { group in
-                            group.addTask {
-                                try await iterator.next()
-                            }
-                            group.addTask {
-                                try await Task.sleep(for: .seconds(chunkTimeout))
-                                throw MycellmError.transportError("Peer stopped responding (no token in \(Int(chunkTimeout))s)")
-                            }
-                            let result = try await group.next()!
-                            group.cancelAll()
-                            return result
-                        }
-                        guard let text = next else {
-                            continuation.finish()
+                guard let qt = self.quicTransport, await qt.isConnected else {
+                    continuation.finish(throwing: MycellmError.transportError("Not connected via QUIC"))
+                    return
+                }
+
+                let req = MessageBuilders.inferenceRequest(
+                    from: self.peerId, model: model, messages: messages,
+                    temperature: temperature, maxTokens: maxTokens, stream: true
+                )
+
+                // Use a deadline that resets on each received chunk
+                let deadline = ContinuousClock.Instant.now + .seconds(chunkTimeout)
+                var lastChunkAt = ContinuousClock.now
+
+                do {
+                    for try await chunk in await qt.requestStream(req) {
+                        let now = ContinuousClock.now
+                        if now - lastChunkAt > .seconds(chunkTimeout) {
+                            continuation.finish(throwing: MycellmError.transportError(
+                                "Peer stopped responding (no token in \(Int(chunkTimeout))s)"))
                             return
                         }
-                        continuation.yield(text)
-                    } catch {
-                        continuation.finish(throwing: error)
-                        return
+                        lastChunkAt = now
+                        let text = chunk.payload["text"]?.stringValue ?? ""
+                        if !text.isEmpty {
+                            continuation.yield(text)
+                        }
                     }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
                 }
             }
             continuation.onTermination = { _ in task.cancel() }
