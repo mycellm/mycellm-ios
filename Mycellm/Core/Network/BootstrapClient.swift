@@ -349,12 +349,13 @@ actor BootstrapClient {
     }
 
     /// Timeout-wrapped streaming: yields text chunks with a per-chunk deadline.
+    /// First chunk must arrive within chunkTimeout; subsequent chunks reset the timer.
     func streamInferenceWithTimeout(
         model: String,
         messages: [[String: String]],
         temperature: Double = 0.7,
         maxTokens: Int = 2048,
-        chunkTimeout: TimeInterval = 30
+        chunkTimeout: TimeInterval = 20
     ) -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
@@ -368,20 +369,28 @@ actor BootstrapClient {
                     temperature: temperature, maxTokens: maxTokens, stream: true
                 )
 
-                // Use a deadline that resets on each received chunk
-                let deadline = ContinuousClock.Instant.now + .seconds(chunkTimeout)
-                var lastChunkAt = ContinuousClock.now
-
                 do {
-                    for try await chunk in await qt.requestStream(req) {
-                        let now = ContinuousClock.now
-                        if now - lastChunkAt > .seconds(chunkTimeout) {
-                            continuation.finish(throwing: MycellmError.transportError(
-                                "Peer stopped responding (no token in \(Int(chunkTimeout))s)"))
+                    let stream = await qt.requestStream(req)
+                    var iterator = stream.makeAsyncIterator()
+
+                    // Loop with per-chunk timeout using Task.sleep racing
+                    while !Task.isCancelled {
+                        let chunk: MessageEnvelope? = try await withThrowingTaskGroup(of: MessageEnvelope?.self) { group in
+                            group.addTask { try await iterator.next() }
+                            group.addTask {
+                                try await Task.sleep(for: .seconds(chunkTimeout))
+                                throw MycellmError.transportError("No response from peer (\(Int(chunkTimeout))s)")
+                            }
+                            let result = try await group.next()!
+                            group.cancelAll()
+                            return result
+                        }
+
+                        guard let envelope = chunk else {
+                            continuation.finish()
                             return
                         }
-                        lastChunkAt = now
-                        let text = chunk.payload["text"]?.stringValue ?? ""
+                        let text = envelope.payload["text"]?.stringValue ?? ""
                         if !text.isEmpty {
                             continuation.yield(text)
                         }
