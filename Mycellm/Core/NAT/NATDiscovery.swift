@@ -101,7 +101,9 @@ actor NATDiscovery {
             var hostname = [CChar](repeating: 0, count: Int(NI_MAXHOST))
             getnameinfo(interface.ifa_addr, socklen_t(interface.ifa_addr.pointee.sa_len),
                         &hostname, socklen_t(hostname.count), nil, 0, NI_NUMERICHOST)
-            address = String(cString: hostname)
+            address = hostname.withUnsafeBufferPointer { buf in
+                String(decoding: buf.prefix(while: { $0 != 0 }).map { UInt8(bitPattern: $0) }, as: UTF8.self)
+            }
         }
         return address
     }

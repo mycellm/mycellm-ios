@@ -372,7 +372,9 @@ actor InferenceEngine {
             let len = llama_token_to_piece(vocab, token, &buf, 256, 0, true)
             if len > 0 {
                 buf[Int(len)] = 0
-                result += String(cString: buf)
+                result += buf.withUnsafeBufferPointer { p in
+                    String(decoding: p.prefix(Int(len)).map { UInt8(bitPattern: $0) }, as: UTF8.self)
+                }
             }
         }
         return result
@@ -407,8 +409,9 @@ actor InferenceEngine {
         let n = llama_chat_apply_template(tmpl, &chatMsgs, chatMsgs.count, true, &buf, Int32(buf.count))
 
         if n > 0 && n < buf.count {
-            buf[Int(n)] = 0
-            return String(cString: buf)
+            return buf.withUnsafeBufferPointer { p in
+                String(decoding: p.prefix(Int(n)).map { UInt8(bitPattern: $0) }, as: UTF8.self)
+            }
         }
 
         // Fallback ChatML
