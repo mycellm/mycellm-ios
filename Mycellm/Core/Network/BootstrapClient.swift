@@ -370,32 +370,30 @@ actor BootstrapClient {
                 )
 
                 do {
-                    let stream = await qt.requestStream(req)
-                    var iterator = stream.makeAsyncIterator()
+                    // Timeout task cancels the outer task if no chunks arrive
+                    let timeoutTask = Task {
+                        try await Task.sleep(for: .seconds(chunkTimeout))
+                        task.cancel()
+                    }
 
-                    // Loop with per-chunk timeout using Task.sleep racing
-                    while !Task.isCancelled {
-                        let chunk: MessageEnvelope? = try await withThrowingTaskGroup(of: MessageEnvelope?.self) { group in
-                            group.addTask { try await iterator.next() }
-                            group.addTask {
-                                try await Task.sleep(for: .seconds(chunkTimeout))
-                                throw MycellmError.transportError("No response from peer (\(Int(chunkTimeout))s)")
-                            }
-                            let result = try await group.next()!
-                            group.cancelAll()
-                            return result
-                        }
-
-                        guard let envelope = chunk else {
-                            continuation.finish()
-                            return
-                        }
-                        let text = envelope.payload["text"]?.stringValue ?? ""
+                    for try await chunk in await qt.requestStream(req) {
+                        // Got a chunk — reset timeout
+                        timeoutTask.cancel()
+                        let text = chunk.payload["text"]?.stringValue ?? ""
                         if !text.isEmpty {
                             continuation.yield(text)
                         }
+                        // Start new timeout for next chunk
+                        let nextTimeout = Task {
+                            try await Task.sleep(for: .seconds(chunkTimeout))
+                            task.cancel()
+                        }
+                        _ = nextTimeout // keep reference alive
                     }
+                    timeoutTask.cancel()
                     continuation.finish()
+                } catch is CancellationError {
+                    continuation.finish(throwing: MycellmError.transportError("No response from peer (\(Int(chunkTimeout))s)"))
                 } catch {
                     continuation.finish(throwing: error)
                 }
@@ -431,7 +429,9 @@ private func getLocalIPAddress() -> String? {
         var hostname = [CChar](repeating: 0, count: Int(NI_MAXHOST))
         getnameinfo(interface.ifa_addr, socklen_t(interface.ifa_addr.pointee.sa_len),
                     &hostname, socklen_t(hostname.count), nil, 0, NI_NUMERICHOST)
-        address = String(cString: hostname)
+        address = hostname.withUnsafeBufferPointer { buf in
+            String(decoding: buf.prefix(while: { $0 != 0 }).map { UInt8(bitPattern: $0) }, as: UTF8.self)
+        }
     }
     return address
 }
