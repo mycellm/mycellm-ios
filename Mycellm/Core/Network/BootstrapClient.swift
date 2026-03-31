@@ -357,44 +357,36 @@ actor BootstrapClient {
         maxTokens: Int = 2048,
         chunkTimeout: TimeInterval = 20
     ) -> AsyncThrowingStream<String, Error> {
-        AsyncThrowingStream { continuation in
+        let inner = streamInference(model: model, messages: messages, temperature: temperature, maxTokens: maxTokens)
+        return AsyncThrowingStream { continuation in
             let task = Task {
-                guard let qt = self.quicTransport, await qt.isConnected else {
-                    continuation.finish(throwing: MycellmError.transportError("Not connected via QUIC"))
-                    return
+                var gotChunk = false
+                let deadline = UnsafeSendableBox(Date().addingTimeInterval(chunkTimeout))
+
+                // Watchdog: checks deadline periodically
+                let watchdog = Task {
+                    while !Task.isCancelled {
+                        try await Task.sleep(for: .seconds(2))
+                        if Date() > deadline.value {
+                            if !gotChunk {
+                                continuation.finish(throwing: MycellmError.transportError("No response from peer (\(Int(chunkTimeout))s)"))
+                            }
+                            return
+                        }
+                    }
                 }
 
-                let req = MessageBuilders.inferenceRequest(
-                    from: self.peerId, model: model, messages: messages,
-                    temperature: temperature, maxTokens: maxTokens, stream: true
-                )
-
                 do {
-                    // Timeout task cancels the outer task if no chunks arrive
-                    let timeoutTask = Task {
-                        try await Task.sleep(for: .seconds(chunkTimeout))
-                        task.cancel()
+                    for try await text in inner {
+                        guard !Task.isCancelled else { break }
+                        gotChunk = true
+                        deadline.value = Date().addingTimeInterval(chunkTimeout)
+                        continuation.yield(text)
                     }
-
-                    for try await chunk in await qt.requestStream(req) {
-                        // Got a chunk — reset timeout
-                        timeoutTask.cancel()
-                        let text = chunk.payload["text"]?.stringValue ?? ""
-                        if !text.isEmpty {
-                            continuation.yield(text)
-                        }
-                        // Start new timeout for next chunk
-                        let nextTimeout = Task {
-                            try await Task.sleep(for: .seconds(chunkTimeout))
-                            task.cancel()
-                        }
-                        _ = nextTimeout // keep reference alive
-                    }
-                    timeoutTask.cancel()
+                    watchdog.cancel()
                     continuation.finish()
-                } catch is CancellationError {
-                    continuation.finish(throwing: MycellmError.transportError("No response from peer (\(Int(chunkTimeout))s)"))
                 } catch {
+                    watchdog.cancel()
                     continuation.finish(throwing: error)
                 }
             }
@@ -410,6 +402,13 @@ actor BootstrapClient {
         lastError = error
         onStateChange?(newState, transport, error)
     }
+}
+
+// MARK: - Sendable Box
+
+private final class UnsafeSendableBox<T>: @unchecked Sendable {
+    var value: T
+    init(_ value: T) { self.value = value }
 }
 
 // MARK: - Local IP Detection
