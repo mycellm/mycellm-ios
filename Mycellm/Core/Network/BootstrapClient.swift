@@ -314,6 +314,7 @@ actor BootstrapClient {
     // MARK: - Streaming Inference
 
     /// Send a streaming inference request over QUIC. Yields text chunks.
+    /// Each chunk has a 30s timeout — if no token arrives in 30s, the stream errors.
     func streamInference(
         model: String,
         messages: [[String: String]],
@@ -344,6 +345,47 @@ actor BootstrapClient {
                     continuation.finish(throwing: error)
                 }
             }
+        }
+    }
+
+    /// Timeout-wrapped streaming: yields text chunks with a per-chunk deadline.
+    func streamInferenceWithTimeout(
+        model: String,
+        messages: [[String: String]],
+        temperature: Double = 0.7,
+        maxTokens: Int = 2048,
+        chunkTimeout: TimeInterval = 30
+    ) -> AsyncThrowingStream<String, Error> {
+        let inner = streamInference(model: model, messages: messages, temperature: temperature, maxTokens: maxTokens)
+        return AsyncThrowingStream { continuation in
+            let task = Task {
+                var iterator = inner.makeAsyncIterator()
+                while true {
+                    do {
+                        let next = try await withThrowingTaskGroup(of: String?.self) { group in
+                            group.addTask {
+                                try await iterator.next()
+                            }
+                            group.addTask {
+                                try await Task.sleep(for: .seconds(chunkTimeout))
+                                throw MycellmError.transportError("Peer stopped responding (no token in \(Int(chunkTimeout))s)")
+                            }
+                            let result = try await group.next()!
+                            group.cancelAll()
+                            return result
+                        }
+                        guard let text = next else {
+                            continuation.finish()
+                            return
+                        }
+                        continuation.yield(text)
+                    } catch {
+                        continuation.finish(throwing: error)
+                        return
+                    }
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
         }
     }
 

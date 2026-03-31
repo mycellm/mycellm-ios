@@ -752,26 +752,41 @@ struct ChatView: View {
         streamTask = Task {
             do {
                 if useQUICStream {
-                    // Stream over QUIC — tokens arrive one-by-one
+                    // Stream over QUIC — tokens arrive one-by-one with per-chunk timeout
                     let rawMessages = Array(chatMessages).map { ["role": $0.role, "content": $0.content] }
                     var tokenCount = 0
-                    for try await text in await node.bootstrapClient.streamInference(
-                        model: model, messages: rawMessages
-                    ) {
-                        guard !Task.isCancelled else { break }
-                        mutate(responseId) { $0.content += text }
-                        tokenCount += 1
-                    }
-                    mutate(responseId) { msg in
-                        msg.tokenCount = tokenCount
-                        let elapsed = Date().timeIntervalSince(msg.startTime)
-                        msg.tokensPerSecond = elapsed > 0 ? Double(tokenCount) / elapsed : 0
-                        msg.isStreaming = false
-                        msg.endTime = Date()
-                        msg.routedVia = "quic"
+                    var quicSucceeded = false
+                    do {
+                        for try await text in await node.bootstrapClient.streamInferenceWithTimeout(
+                            model: model, messages: rawMessages
+                        ) {
+                            guard !Task.isCancelled else { break }
+                            mutate(responseId) { $0.content += text }
+                            tokenCount += 1
+                        }
+                        quicSucceeded = true
+                        mutate(responseId) { msg in
+                            msg.tokenCount = tokenCount
+                            let elapsed = Date().timeIntervalSince(msg.startTime)
+                            msg.tokensPerSecond = elapsed > 0 ? Double(tokenCount) / elapsed : 0
+                            msg.isStreaming = false
+                            msg.endTime = Date()
+                            msg.routedVia = "quic"
+                        }
+                    } catch {
+                        // QUIC failed — fall back to HTTP if no tokens received yet
+                        if tokenCount == 0 && !Task.isCancelled {
+                            let result = try await remoteClient.completeWithMetadata(
+                                model: model, messages: Array(chatMessages)
+                            )
+                            applyNetworkResult(result, to: responseId, model: model)
+                            quicSucceeded = true
+                        } else if !quicSucceeded {
+                            throw error
+                        }
                     }
                 } else {
-                    // HTTP fallback — full response at once
+                    // HTTP path — full response at once
                     let result = try await remoteClient.completeWithMetadata(
                         model: model, messages: Array(chatMessages)
                     )
