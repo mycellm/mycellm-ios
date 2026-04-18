@@ -25,6 +25,11 @@ packages:
   llama:
     url: https://github.com/mattt/llama.swift.git
     from: "2.8470.0"
+  # MLX (Apple) — native Apple-Silicon LLM inference. Required for the MLX
+  # backend on iOS / iPadOS / macOS. Tracking main; pin once 1.0 ships.
+  mlx-swift-lm:
+    url: https://github.com/ml-explore/mlx-swift-lm.git
+    branch: main
 
 targets:
   Mycellm:
@@ -44,7 +49,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.mycellm.app
         MARKETING_VERSION: "1.0.0"
         CURRENT_PROJECT_VERSION: "1"
-        # CODE_SIGN_ENTITLEMENTS: Mycellm/Mycellm.entitlements  # deferred — needs provisioning profile
+        CODE_SIGN_ENTITLEMENTS: Mycellm/Mycellm.entitlements
         GENERATE_INFOPLIST_FILE: true
         INFOPLIST_FILE: Mycellm/Info.plist
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
@@ -56,6 +61,10 @@ targets:
       - package: Hummingbird
       - package: llama
         product: LlamaSwift
+      - package: mlx-swift-lm
+        product: MLXLLM
+      - package: mlx-swift-lm
+        product: MLXLMCommon
 
   MycellmTests:
     type: bundle.unit-test

@@ -27,6 +27,8 @@ final class ModelManager: @unchecked Sendable {
         let path: String
         let sizeBytes: UInt64
         let isLoaded: Bool
+        // "gguf" | "mlx" — selected by InferenceEngine via ModelFormat.detect
+        let format: String
 
         var sizeDescription: String {
             ByteCountFormatter.string(fromByteCount: Int64(sizeBytes), countStyle: .file)
@@ -45,31 +47,56 @@ final class ModelManager: @unchecked Sendable {
         return dir
     }
 
-    /// Scan the models directory for GGUF files.
+    /// Scan the models directory for GGUF files and MLX directories.
     @MainActor
     func scanLocalModels() {
         isScanning = true
         defer { isScanning = false }
 
         let dir = Self.modelsDirectory
-        guard let files = try? FileManager.default.contentsOfDirectory(
-            at: dir, includingPropertiesForKeys: [.fileSizeKey]
+        guard let entries = try? FileManager.default.contentsOfDirectory(
+            at: dir, includingPropertiesForKeys: [.fileSizeKey, .isDirectoryKey]
         ) else { return }
 
         let loadedNames = Set(loadedModels.map(\.filename))
+        let fm = FileManager.default
 
-        localFiles = files
-            .filter { $0.pathExtension == "gguf" }
-            .compactMap { url -> LocalModelFile? in
+        var found: [LocalModelFile] = []
+        for url in entries {
+            let isDir = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
+
+            if !isDir, url.pathExtension == "gguf" {
                 let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-                return LocalModelFile(
+                found.append(LocalModelFile(
                     filename: url.lastPathComponent,
                     path: url.path,
                     sizeBytes: UInt64(size),
-                    isLoaded: loadedNames.contains(url.lastPathComponent)
-                )
+                    isLoaded: loadedNames.contains(url.lastPathComponent),
+                    format: "gguf"
+                ))
+                continue
             }
-            .sorted { $0.filename < $1.filename }
+
+            // MLX directory: contains config.json + at least one .safetensors shard
+            if isDir,
+               fm.fileExists(atPath: url.appendingPathComponent("config.json").path),
+               let inner = try? fm.contentsOfDirectory(at: url, includingPropertiesForKeys: [.fileSizeKey]),
+               inner.contains(where: { $0.pathExtension == "safetensors" }) {
+                let totalSize = inner.reduce(UInt64(0)) { acc, f in
+                    let s = (try? f.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+                    return acc + UInt64(s)
+                }
+                found.append(LocalModelFile(
+                    filename: url.lastPathComponent,
+                    path: url.path,
+                    sizeBytes: totalSize,
+                    isLoaded: loadedNames.contains(url.lastPathComponent),
+                    format: "mlx"
+                ))
+            }
+        }
+
+        localFiles = found.sorted { $0.filename < $1.filename }
     }
 
     /// Load a model from disk into the inference engine.

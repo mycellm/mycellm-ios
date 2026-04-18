@@ -178,9 +178,13 @@ final class NodeService: @unchecked Sendable {
             }
 
             let publicModels = modelManager.loadedModels.filter { $0.scope == "public" }
+            // Backend label: ask the engine which backend is currently active.
+            // mycellm Python advertises "llama.cpp" or "mlx" — match that.
+            let backendRaw = await modelManager.engine.backendName  // "MLX" | "llama.cpp" | "none"
+            let activeBackendLabel = backendRaw.lowercased() == "mlx" ? "mlx" : "llama.cpp"
             let caps = Capabilities(
                 models: publicModels.map { m in
-                    ModelCapability(name: m.name, backend: "llama.cpp", scope: m.scope)
+                    ModelCapability(name: m.name, backend: activeBackendLabel, scope: m.scope)
                 },
                 hardware: HardwareInfo.capabilitiesHardware(),
                 role: publicModels.isEmpty ? "consumer" : "seeder",

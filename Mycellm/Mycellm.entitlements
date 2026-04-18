@@ -4,5 +4,14 @@
 <dict>
 	<key>com.apple.developer.networking.multicast</key>
 	<true/>
+	<!--
+	  Increased Memory Limit — required to load >3 GB models on devices with
+	  8 GB unified memory (iPhone 15 Pro, 16 Pro). On 12 GB devices (16 Pro
+	  Max, 17 series) it lifts the per-process cap so 7B Q4 quants can fit.
+	  Provisioning profile must include this capability — request via Apple
+	  Developer portal under "Additional Capabilities".
+	-->
+	<key>com.apple.developer.kernel.increased-memory-limit</key>
+	<true/>
 </dict>
 </plist>
