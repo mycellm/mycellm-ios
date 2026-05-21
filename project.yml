@@ -79,3 +79,4 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.mycellm.app.tests
+        GENERATE_INFOPLIST_FILE: true
