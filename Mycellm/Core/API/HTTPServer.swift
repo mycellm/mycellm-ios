@@ -215,10 +215,18 @@ actor HTTPServer {
                     return try Self.error("name and api_base required for openai backend")
                 }
                 // HTTP handlers are non-isolated; can't touch @MainActor
-                // Preferences.shared. Read the UserDefaults key directly,
-                // matching Preferences.defaultCtxLen (default 32768).
-                let defaultCtxLen = UserDefaults.standard.integer(forKey: "default_ctx_len")
-                let resolvedCtxLen = (body["ctx_len"] as? Int) ?? (defaultCtxLen > 0 ? defaultCtxLen : 32768)
+                // Preferences.shared. Read UserDefaults directly + apply
+                // the same memory-tiered fallback Preferences uses, so
+                // /v1/node/models/load with no explicit ctx_len doesn't
+                // OOM Metal on small phones.
+                let memDefault: Int = {
+                    let gb = HardwareInfo.totalMemoryGB
+                    if gb >= 14 { return 16384 }
+                    if gb >= 10 { return 8192 }
+                    return 4096
+                }()
+                let userDefault = UserDefaults.standard.integer(forKey: "default_ctx_len")
+                let resolvedCtxLen = (body["ctx_len"] as? Int) ?? (userDefault > 0 ? userDefault : memDefault)
                 try await mm.loadAPIModel(
                     name: name,
                     apiBase: apiBase,

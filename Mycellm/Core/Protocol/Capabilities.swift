@@ -27,7 +27,10 @@ enum ModelTier: String, Sendable {
 struct ModelCapability: Sendable {
     var name: String
     var quant: String = ""
-    var ctxLen: Int = 32768  // mirrors MYCELLM_DEFAULT_CTX_LEN on the Python side
+    // 4096 is the safe-on-mobile default; actual value gets overwritten
+    // from the loaded model's ctx_len when a model is loaded. Capability
+    // peers shouldn't assume Python's 32K MYCELLM_DEFAULT_CTX_LEN.
+    var ctxLen: Int = 4096
     var backend: String = "llama.cpp"
     var tags: [String] = []
     var tier: String = ""
@@ -58,7 +61,7 @@ struct ModelCapability: Sendable {
         ModelCapability(
             name: d["name"]?.stringValue ?? "",
             quant: d["quant"]?.stringValue ?? "",
-            ctxLen: d["ctx_len"]?.intValue ?? 32768,
+            ctxLen: d["ctx_len"]?.intValue ?? 4096,
             backend: d["backend"]?.stringValue ?? "llama.cpp",
             tags: d["tags"]?.arrayValue?.compactMap(\.stringValue) ?? [],
             tier: d["tier"]?.stringValue ?? "",
