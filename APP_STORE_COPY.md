@@ -29,8 +29,10 @@ Alternates if Apple objects to "on-device":
 ### Promotional Text (170 char) — bumpable without re-review
 
 ```
-Chat with open-source AI models that run on YOUR device, not in someone else's cloud. Your iPad becomes the AI. Your home network becomes the inference cluster. 🍄
+Chat with open-source AI models that run on YOUR device, not in someone else's cloud. Your iPad becomes the AI. Your home network becomes the inference cluster.
 ```
+
+(ASC rejects emojis in promotional text. Save the 🍄 for marketing-site copy where it's allowed.)
 
 ### Keywords (100 char total, comma-separated)
 
@@ -45,8 +47,11 @@ keyword-stuffing competitor brand names. Kept open-model family names
 ### Support URL
 
 ```
-https://mycellm.ai/support
+https://github.com/mycellm/mycellm-ios/issues
 ```
+
+(`mycellm.ai/support` doesn't exist yet. GitHub Issues is the actual
+support channel for an Apache-2.0 OSS app and Apple accepts that.)
 
 ### Marketing URL
 
