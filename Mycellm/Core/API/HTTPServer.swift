@@ -59,29 +59,73 @@ actor HTTPServer {
             try Self.json(OpenAIRoutes.listModels(manager: nodeService.modelManager))
         }
 
+        router.get("/v1/models/capabilities") { _, _ -> Response in
+            try Self.json(OpenAIRoutes.listCapabilities(manager: nodeService.modelManager))
+        }
+
         router.post("/v1/chat/completions") { request, _ -> Response in
             let data = try await request.body.collect(upTo: 1024 * 1024)
             let req = try JSONDecoder().decode(OpenAIRoutes.ChatCompletionRequest.self, from: Data(buffer: data))
 
             let engine = nodeService.modelManager.engine
+            let modelName = req.model
+            let reasoningExclude = OpenAIRoutes.resolveReasoningExclude(req.reasoning)
+            // Engine accepts dict messages — we still pass content as the
+            // canonical text; tool_calls / tool_call_id / name carried via
+            // the typed shape but flattened to plain strings here until
+            // the backends understand tool-call message roles natively.
+            let engineMessages: [[String: String]] = req.messages.map { m in
+                var d: [String: String] = ["role": m.role]
+                if let c = m.content { d["content"] = c }
+                return d
+            }
 
             if req.stream ?? false {
                 let stream = await engine.stream(
-                    messages: req.messages.map { ["role": $0.role, "content": $0.content] },
+                    messages: engineMessages,
                     temperature: req.temperature ?? 0.7,
                     maxTokens: req.max_tokens ?? 2048
                 )
+                // Per-stream <think>-splitter routes tokens to delta.content
+                // vs delta.reasoning_content. No-op for non-thinking models.
+                let splitter = StreamingThinkSplitter(modelName: modelName)
                 let sseStream = AsyncStream<ByteBuffer> { continuation in
                     Task {
-                        for try await chunk in stream {
+                        func emit(_ delta: [String: Any], finish: Any = NSNull()) {
                             let event: [String: Any] = [
-                                "choices": [["delta": ["content": chunk], "index": 0, "finish_reason": NSNull()]]
+                                "choices": [["delta": delta, "index": 0, "finish_reason": finish]],
+                                "model": modelName,
+                                "object": "chat.completion.chunk",
                             ]
-                            if let json = try? JSONSerialization.data(withJSONObject: event) {
-                                let line = "data: \(String(data: json, encoding: .utf8)!)\n\n"
-                                continuation.yield(ByteBuffer(string: line))
+                            if let json = try? JSONSerialization.data(withJSONObject: event),
+                               let s = String(data: json, encoding: .utf8) {
+                                continuation.yield(ByteBuffer(string: "data: \(s)\n\n"))
                             }
                         }
+                        for try await chunk in stream {
+                            for (kind, piece) in splitter.feed(chunk) {
+                                switch kind {
+                                case .content:
+                                    emit(["content": piece])
+                                case .reasoning where !reasoningExclude:
+                                    emit(["reasoning_content": piece])
+                                default:
+                                    break  // dropped: reasoning while excluded
+                                }
+                            }
+                        }
+                        // Drain at end of stream (handles unclosed <think>)
+                        for (kind, piece) in splitter.flush() {
+                            switch kind {
+                            case .content:
+                                emit(["content": piece])
+                            case .reasoning where !reasoningExclude:
+                                emit(["reasoning_content": piece])
+                            default:
+                                break
+                            }
+                        }
+                        emit([:], finish: "stop")
                         continuation.yield(ByteBuffer(string: "data: [DONE]\n\n"))
                         continuation.finish()
                     }
@@ -93,15 +137,20 @@ actor HTTPServer {
                 )
             } else {
                 let result = try await engine.complete(
-                    messages: req.messages.map { ["role": $0.role, "content": $0.content] },
+                    messages: engineMessages,
                     temperature: req.temperature ?? 0.7,
                     maxTokens: req.max_tokens ?? 2048
                 )
                 await MainActor.run {
                     nodeService.recordHTTPInference(model: req.model, tokens: result.promptTokens + result.completionTokens)
                 }
+                let (content, reasoning) = ReasoningDialects.splitReasoning(result.text, modelName: modelName)
+                var message: [String: Any] = ["role": "assistant", "content": content]
+                if !reasoning.isEmpty && !reasoningExclude {
+                    message["reasoning_content"] = reasoning
+                }
                 let response: [String: Any] = [
-                    "choices": [["message": ["role": "assistant", "content": result.text], "index": 0, "finish_reason": "stop"]],
+                    "choices": [["message": message, "index": 0, "finish_reason": "stop"]],
                     "usage": ["prompt_tokens": result.promptTokens, "completion_tokens": result.completionTokens, "total_tokens": result.promptTokens + result.completionTokens],
                     "model": req.model,
                 ]
