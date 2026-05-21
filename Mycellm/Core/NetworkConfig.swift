@@ -18,13 +18,12 @@ enum NetworkConfig {
     /// Default HTTP API port for local server.
     static let httpPort: Int = 8420
 
-    /// Privacy policy URL. Points at api.mycellm.dev because the
-    /// docs.mycellm.dev ↔ mycellm.ai redirect loop is still being
-    /// untangled — api.mycellm.dev serves the real content directly.
-    static let privacyURL = "https://api.mycellm.dev/privacy"
+    /// Privacy policy URL — served from the marketing site (Astro build
+    /// produces /privacy/index.html). The api. subdomain is REST only.
+    static let privacyURL = "https://mycellm.ai/privacy"
 
-    /// Terms of service URL. Same reasoning as privacyURL.
-    static let termsURL = "https://api.mycellm.dev/terms"
+    /// Terms of service URL — same hosting as privacyURL.
+    static let termsURL = "https://mycellm.ai/terms"
 
     /// Keychain service prefix.
     static let keychainPrefix = "com.mycellm"
