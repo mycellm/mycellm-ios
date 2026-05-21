@@ -53,6 +53,10 @@ struct ChatView: View {
         var startTime: Date = Date()
         var endTime: Date?
         var tokensPerSecond: Double = 0
+        /// Model's internal reasoning, separated from the user-facing answer
+        /// via the OpenAI-o-series style reasoning_content side channel.
+        /// Rendered in a collapsible disclosure panel above content.
+        var reasoningContent: String = ""
 
         init(role: String, content: String, tokenCount: Int = 0, routedVia: String = "local",
              timestamp: Date = Date(), isStreaming: Bool = false) {
@@ -778,7 +782,8 @@ struct ChatView: View {
                         // QUIC failed — fall back to HTTP if no tokens received yet
                         if tokenCount == 0 && !Task.isCancelled {
                             let result = try await remoteClient.completeWithMetadata(
-                                model: model, messages: Array(chatMessages)
+                                model: model, messages: Array(chatMessages),
+                                showReasoning: Preferences.shared.chatShowReasoning
                             )
                             applyNetworkResult(result, to: responseId, model: model)
                             quicSucceeded = true
@@ -849,6 +854,7 @@ struct ChatView: View {
         let content = result.content
         mutate(responseId) { msg in
             msg.content = content
+            msg.reasoningContent = result.reasoningContent
             let endTime = Date()
             let elapsed = endTime.timeIntervalSince(msg.startTime)
             msg.tokenCount = result.completionTokens > 0
@@ -878,7 +884,7 @@ struct ChatView: View {
             || error.localizedDescription.contains("connection")
         if isRetryable {
             try? await Task.sleep(for: .seconds(1))
-            if let retry = try? await remoteClient.completeWithMetadata(model: model, messages: chatMessages),
+            if let retry = try? await remoteClient.completeWithMetadata(model: model, messages: chatMessages, showReasoning: Preferences.shared.chatShowReasoning),
                validateResponse(retry) == nil {
                 applyNetworkResult(retry, to: responseId, model: model)
                 return
@@ -1122,6 +1128,9 @@ struct MessageBubble: View {
 
     private var bubble: some View {
         VStack(alignment: isUser ? .trailing : .leading, spacing: 4) {
+            if !isUser && !message.reasoningContent.isEmpty {
+                ReasoningDisclosure(reasoning: message.reasoningContent)
+            }
             messageText
         }
         .padding(12)
@@ -1307,6 +1316,60 @@ struct BlinkingCursor: View {
                     visible.toggle()
                 }
             }
+    }
+}
+
+// MARK: - Reasoning disclosure
+
+/// Collapsible disclosure for model reasoning ("thinking"). Renders above the
+/// answer in the assistant message bubble when the server surfaced
+/// reasoning_content. Default collapsed — users opt in to expand. Styled
+/// in Poison Purple to signal "internal model state, not the answer".
+struct ReasoningDisclosure: View {
+    let reasoning: String
+    @State private var isExpanded: Bool = false
+
+    private var lineCount: Int {
+        reasoning.split(whereSeparator: \.isNewline).count
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button(action: { withAnimation(.easeInOut(duration: 0.15)) { isExpanded.toggle() } }) {
+                HStack(spacing: 6) {
+                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 10, weight: .medium))
+                    Image(systemName: "sparkles")
+                        .font(.system(size: 10))
+                    Text("Reasoning")
+                        .font(.mono(11, weight: .medium))
+                    Text("(\(lineCount) lines)")
+                        .font(.mono(10))
+                        .opacity(0.6)
+                    Spacer()
+                }
+                .foregroundStyle(Color.poisonPurple)
+                .padding(.vertical, 4)
+                .padding(.horizontal, 8)
+            }
+            .buttonStyle(.plain)
+
+            if isExpanded {
+                Text(reasoning)
+                    .font(.mono(11))
+                    .foregroundStyle(Color.consoleDim)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 8)
+                    .padding(.bottom, 6)
+            }
+        }
+        .background(Color.poisonPurple.opacity(0.05))
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(Color.poisonPurple.opacity(0.15), lineWidth: 1)
+        )
     }
 }
 

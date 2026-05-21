@@ -17,6 +17,7 @@ struct SettingsView: View {
                 identitySection
                 nodeSection
                 networkSection
+                chatSection
                 privacyGuardSection
                 remoteEndpointSection
                 localAPISection
@@ -116,6 +117,18 @@ struct SettingsView: View {
                     .font(.mono(12))
                     .foregroundStyle(Color.relayBlue)
             }
+        }
+    }
+
+    // MARK: - Chat
+
+    private var chatSection: some View {
+        Section(header: Text("Chat"), footer: Text("When Show Reasoning is off (default), thinking-model output is stripped at the server so the chat only shows the answer. Turn on to see the model's step-by-step reasoning in a collapsible panel above each response.").font(.mono(10))) {
+            Toggle("Show Reasoning", isOn: Binding(
+                get: { preferences.chatShowReasoning },
+                set: { preferences.chatShowReasoning = $0 }
+            ))
+            .font(.mono(13))
         }
     }
 
