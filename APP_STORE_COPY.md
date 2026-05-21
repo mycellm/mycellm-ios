@@ -57,8 +57,11 @@ https://mycellm.ai
 ### Privacy Policy URL
 
 ```
-https://mycellm.ai/privacy
+https://api.mycellm.dev/privacy
 ```
+
+(The `mycellm.ai/privacy` and `docs.mycellm.dev/privacy` endpoints
+currently 301-loop to each other — fix that, then update this URL.)
 
 ### Copyright
 
