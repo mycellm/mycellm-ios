@@ -28,5 +28,9 @@ enum NetworkConfig {
     static let keychainPrefix = "com.mycellm"
 
     /// Protocol/core version — must match the Python CLI version.
-    static let version = "0.2.2"
+    /// Single source of truth: SettingsView, HealthRoute, BootstrapClient,
+    /// NodeService (peer hello), and Capabilities all read this. Bump when
+    /// upstream Python mycellm cuts a release that changes the wire
+    /// protocol or the OpenAI-API surface that iOS mirrors.
+    static let version = "0.3.0"
 }

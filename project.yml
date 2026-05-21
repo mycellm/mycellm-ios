@@ -80,3 +80,29 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.mycellm.app.tests
         GENERATE_INFOPLIST_FILE: true
+
+# Explicit scheme so xcodegen emits one with debugEnabled: false.
+# This avoids Xcode 26.x's slow + flaky dyld_shared_cache_extract_dylibs
+# step when installing on a wireless physical device for the first time
+# (errors with DVTDeviceSymbolsCoordinatorErrorDomain 908). The app
+# still installs and launches normally; you just can't attach breakpoints
+# or see symbolicated stack traces. Run in the simulator for full debug.
+schemes:
+  Mycellm:
+    build:
+      targets:
+        Mycellm: all
+        MycellmTests: [test]
+    run:
+      config: Debug
+      debugEnabled: false
+    test:
+      config: Debug
+      targets:
+        - MycellmTests
+    profile:
+      config: Release
+    analyze:
+      config: Debug
+    archive:
+      config: Release
