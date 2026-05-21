@@ -25,11 +25,13 @@ packages:
   llama:
     url: https://github.com/mattt/llama.swift.git
     from: "2.8470.0"
-  # MLX (Apple) — native Apple-Silicon LLM inference. Required for the MLX
-  # backend on iOS / iPadOS / macOS. Tracking main; pin once 1.0 ships.
-  mlx-swift-lm:
-    url: https://github.com/ml-explore/mlx-swift-lm.git
-    branch: main
+  # MLX (Apple) — native Apple-Silicon LLM inference. Temporarily disabled
+  # in v0.3.0; tracking v0.3.1 refactor for current mlx-swift-lm API.
+  # When re-enabled, also add MLXHuggingFace product + swift-transformers
+  # for the #huggingFaceTokenizerLoader macro expansion site.
+  # mlx-swift-lm:
+  #   url: https://github.com/ml-explore/mlx-swift-lm.git
+  #   branch: main
 
 targets:
   Mycellm:
@@ -61,10 +63,11 @@ targets:
       - package: Hummingbird
       - package: llama
         product: LlamaSwift
-      - package: mlx-swift-lm
-        product: MLXLLM
-      - package: mlx-swift-lm
-        product: MLXLMCommon
+      # MLX deps disabled — see mlx-swift-lm package comment above.
+      # - package: mlx-swift-lm
+      #   product: MLXLLM
+      # - package: mlx-swift-lm
+      #   product: MLXLMCommon
 
   MycellmTests:
     type: bundle.unit-test
