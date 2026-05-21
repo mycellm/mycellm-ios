@@ -19,6 +19,13 @@ final class ModelManager: @unchecked Sendable {
         let sizeBytes: UInt64
         let scope: String
         let loadedAt: Date
+        // Capability metadata surfaced on /v1/models/capabilities.
+        // Defaults so older call sites that only know name/filename/size
+        // still construct cleanly; richer values fill in as we learn them.
+        var paramCountB: Double = 0
+        var quant: String = ""
+        var contextLength: Int = 32768
+        var backend: String = "llama.cpp"
     }
 
     struct LocalModelFile: Identifiable, Sendable {

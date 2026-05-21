@@ -87,6 +87,35 @@ final class Preferences: @unchecked Sendable {
         set { defaults.set(newValue, forKey: "sensitive_guard_enabled") }
     }
 
+    // MARK: - Reasoning ("thinking")
+
+    /// When true, requests to /v1/chat/completions with no explicit `reasoning`
+    /// block strip <think>...</think> from responses and ask Qwen3-family
+    /// templates to suppress thinking. End-user chat feels clean by default;
+    /// power users can opt in to seeing reasoning via the chat UI toggle.
+    var hideReasoningByDefault: Bool {
+        get { defaults.object(forKey: "hide_reasoning_by_default") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "hide_reasoning_by_default") }
+    }
+
+    /// Per-chat UI toggle: when true, ChatView shows reasoning in a
+    /// collapsible disclosure panel above the answer. Doesn't change
+    /// server policy — sends `reasoning: {"exclude": false}` in the
+    /// request body so the server emits reasoning_content.
+    var chatShowReasoning: Bool {
+        get { defaults.bool(forKey: "chat_show_reasoning") }
+        set { defaults.set(newValue, forKey: "chat_show_reasoning") }
+    }
+
+    // MARK: - Inference
+
+    /// Default context window for loaded models. Explicit ctx_len on
+    /// load requests still wins. Mirrors MYCELLM_DEFAULT_CTX_LEN.
+    var defaultCtxLen: Int {
+        get { defaults.integer(forKey: "default_ctx_len").nonZero ?? 32768 }
+        set { defaults.set(newValue, forKey: "default_ctx_len") }
+    }
+
     // MARK: - Display
 
     var keepAwake: Bool {
