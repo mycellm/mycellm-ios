@@ -23,7 +23,12 @@ actor LlamaCppBackend: InferenceBackend {
 
     // MARK: - Load / Unload
 
-    func loadModel(path: String, name: String) async throws {
+    /// Context length the active model was loaded with. Used by stream/
+    /// complete to size the prompt-fit budget so we don't truncate based
+    /// on an outdated 4K assumption.
+    private(set) var loadedCtxLen: Int = 4096
+
+    func loadModel(path: String, name: String, ctxLen: Int) async throws {
         guard FileManager.default.fileExists(atPath: path) else {
             throw MycellmError.inferenceError("File not found: \(path)")
         }
@@ -58,7 +63,7 @@ actor LlamaCppBackend: InferenceBackend {
         model = m
 
         var ctxParams = llama_context_default_params()
-        ctxParams.n_ctx = 4096
+        ctxParams.n_ctx = UInt32(ctxLen)
         ctxParams.n_batch = 512
         ctxParams.n_threads = Int32(max(1, ProcessInfo.processInfo.activeProcessorCount - 2))
 
@@ -69,6 +74,7 @@ actor LlamaCppBackend: InferenceBackend {
         }
         ctx = c
         loadedModel = name
+        loadedCtxLen = ctxLen
     }
 
     func unloadModel() {
@@ -183,7 +189,7 @@ actor LlamaCppBackend: InferenceBackend {
         if let c = ctx { llama_free(c) }
 
         var ctxParams = llama_context_default_params()
-        ctxParams.n_ctx = 4096
+        ctxParams.n_ctx = UInt32(loadedCtxLen)
         ctxParams.n_batch = 512
         ctxParams.n_threads = Int32(max(1, ProcessInfo.processInfo.activeProcessorCount - 2))
 
@@ -215,7 +221,9 @@ actor LlamaCppBackend: InferenceBackend {
     // MARK: - Context Window Management
 
     private func fitMessages(_ messages: [[String: String]], model: OpaquePointer) -> [[String: String]] {
-        let maxPromptTokens = 4096 - 512
+        // Reserve 512 tokens for the model's response. Budget scales with
+        // the context window the model was actually loaded with.
+        let maxPromptTokens = max(512, loadedCtxLen - 512)
 
         let fullPrompt = applyChatTemplate(messages: messages, model: model)
         let fullTokens = tokenize(text: fullPrompt, model: model)

@@ -106,18 +106,24 @@ final class ModelManager: @unchecked Sendable {
         localFiles = found.sorted { $0.filename < $1.filename }
     }
 
-    /// Load a model from disk into the inference engine.
+    /// Load a model from disk into the inference engine. ctxLen defaults
+    /// to the user preference (Preferences.defaultCtxLen, 32K) when not
+    /// supplied — explicit overrides come from the /v1/node/models/load
+    /// HTTP endpoint.
     @MainActor
-    func loadModel(file: LocalModelFile, scope: String = "home") async throws {
+    func loadModel(file: LocalModelFile, scope: String = "home", ctxLen: Int? = nil) async throws {
         isLoading = true
         loadingModelName = file.filename
         loadError = nil
 
+        let effectiveCtxLen = ctxLen ?? Preferences.shared.defaultCtxLen
         do {
-            try await engine.loadModel(path: file.path, name: file.filename)
+            try await engine.loadModel(path: file.path, name: file.filename, ctxLen: effectiveCtxLen)
             let loaded = LoadedModel(
                 name: file.filename, filename: file.filename,
-                sizeBytes: file.sizeBytes, scope: scope, loadedAt: Date()
+                sizeBytes: file.sizeBytes, scope: scope, loadedAt: Date(),
+                contextLength: effectiveCtxLen,
+                backend: ModelFormat.detect(path: file.path) == .mlx ? "MLX" : "llama.cpp"
             )
             loadedModels = [loaded] // Only one model at a time on iOS
             isLoading = false

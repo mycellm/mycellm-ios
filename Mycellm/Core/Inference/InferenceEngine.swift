@@ -37,7 +37,7 @@ actor InferenceEngine {
 
     // MARK: - Load / Unload
 
-    func loadModel(path: String, name: String) async throws {
+    func loadModel(path: String, name: String, ctxLen: Int) async throws {
         let format = ModelFormat.detect(path: path)
 
         // Select backend based on model format
@@ -56,7 +56,7 @@ actor InferenceEngine {
 
         state = .loading(name)
         do {
-            try await newBackend.loadModel(path: path, name: name)
+            try await newBackend.loadModel(path: path, name: name, ctxLen: ctxLen)
             backend = newBackend
             currentModel = name
             tokensPerSecond = 0

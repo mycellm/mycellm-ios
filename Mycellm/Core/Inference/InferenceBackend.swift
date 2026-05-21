@@ -47,8 +47,11 @@ protocol InferenceBackend: Actor {
     /// Tokens per second from the last inference.
     var tokensPerSecond: Double { get }
 
-    /// Load a model from the given path.
-    func loadModel(path: String, name: String) async throws
+    /// Load a model from the given path with the requested context length.
+    /// Callers (InferenceEngine via ModelManager) source ctxLen from
+    /// Preferences.defaultCtxLen unless an explicit override is provided
+    /// via the /v1/node/models/load HTTP endpoint.
+    func loadModel(path: String, name: String, ctxLen: Int) async throws
 
     /// Unload the current model and free resources.
     func unloadModel()

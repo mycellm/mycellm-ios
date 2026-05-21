@@ -196,7 +196,7 @@ actor MLXBackend: InferenceBackend {
     private(set) var loadedModel: String?
     private(set) var tokensPerSecond: Double = 0.0
 
-    func loadModel(path: String, name: String) async throws {
+    func loadModel(path: String, name: String, ctxLen: Int) async throws {
         throw MycellmError.inferenceError(
             "MLX backend requires the mlx-swift-lm package. " +
             "Add .package(url: \"https://github.com/ml-explore/mlx-swift-lm\", branch: \"main\") " +

@@ -67,6 +67,21 @@ actor HTTPServer {
             let data = try await request.body.collect(upTo: 1024 * 1024)
             let req = try JSONDecoder().decode(OpenAIRoutes.ChatCompletionRequest.self, from: Data(buffer: data))
 
+            // Honest "not implemented" rather than silent drop. v0.3.0 ships
+            // reasoning end-to-end but NOT tool/function calling — the
+            // engine signature doesn't take tools, the llama.cpp backend
+            // doesn't honor them, and the response shape can't carry
+            // tool_calls back. Returning 400 here so callers see the gap
+            // clearly. Tools wiring tracked for v0.3.1.
+            if let tools = req.tools, !tools.isEmpty {
+                return try Self.error(
+                    "Tool/function calling is not yet implemented on the iOS server. " +
+                    "Send the request without the `tools` field, or route to a " +
+                    "Python mycellm node which supports tools as of v0.3.0.",
+                    status: .badRequest
+                )
+            }
+
             let engine = nodeService.modelManager.engine
             let modelName = req.model
             let reasoningExclude = OpenAIRoutes.resolveReasoningExclude(req.reasoning)
@@ -195,12 +210,17 @@ actor HTTPServer {
                       let apiBase = body["api_base"] as? String, !apiBase.isEmpty else {
                     return try Self.error("name and api_base required for openai backend")
                 }
+                // HTTP handlers are non-isolated; can't touch @MainActor
+                // Preferences.shared. Read the UserDefaults key directly,
+                // matching Preferences.defaultCtxLen (default 32768).
+                let defaultCtxLen = UserDefaults.standard.integer(forKey: "default_ctx_len")
+                let resolvedCtxLen = (body["ctx_len"] as? Int) ?? (defaultCtxLen > 0 ? defaultCtxLen : 32768)
                 try await mm.loadAPIModel(
                     name: name,
                     apiBase: apiBase,
                     apiKey: body["api_key"] as? String ?? "",
                     apiModel: body["api_model"] as? String ?? name,
-                    ctxLen: body["ctx_len"] as? Int ?? 4096
+                    ctxLen: resolvedCtxLen
                 )
                 return try Self.json(["status": "loaded", "model": name, "backend": "openai"])
             } else {

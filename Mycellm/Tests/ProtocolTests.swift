@@ -7,7 +7,9 @@ final class ProtocolTests: XCTestCase {
     // MARK: - MessageType
 
     func testAllMessageTypesHavePythonValues() {
-        // Ensure all 17 message types match Python enum values
+        // Ensure all message type raw values match Python's MessageType enum.
+        // Bump expectedTypes whenever Python adds a new MessageType case so
+        // wire-format drift is caught here.
         let expectedTypes: [String] = [
             "node_hello", "node_hello_ack",
             "peer_announce", "peer_query", "peer_response",
@@ -17,11 +19,13 @@ final class ProtocolTests: XCTestCase {
             "inference_relay",
             "peer_exchange",
             "fleet_command", "fleet_response",
+            "punch_request", "punch_initiate", "punch_response", "punch_result",
+            "dht_query", "dht_response",
             "error",
         ]
         let actualTypes = MessageType.allCases.map(\.rawValue)
         XCTAssertEqual(Set(actualTypes), Set(expectedTypes))
-        XCTAssertEqual(actualTypes.count, 17)
+        XCTAssertEqual(actualTypes.count, expectedTypes.count)
     }
 
     // MARK: - MessageEnvelope

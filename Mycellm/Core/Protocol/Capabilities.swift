@@ -27,7 +27,7 @@ enum ModelTier: String, Sendable {
 struct ModelCapability: Sendable {
     var name: String
     var quant: String = ""
-    var ctxLen: Int = 4096
+    var ctxLen: Int = 32768  // mirrors MYCELLM_DEFAULT_CTX_LEN on the Python side
     var backend: String = "llama.cpp"
     var tags: [String] = []
     var tier: String = ""
@@ -58,7 +58,7 @@ struct ModelCapability: Sendable {
         ModelCapability(
             name: d["name"]?.stringValue ?? "",
             quant: d["quant"]?.stringValue ?? "",
-            ctxLen: d["ctx_len"]?.intValue ?? 4096,
+            ctxLen: d["ctx_len"]?.intValue ?? 32768,
             backend: d["backend"]?.stringValue ?? "llama.cpp",
             tags: d["tags"]?.arrayValue?.compactMap(\.stringValue) ?? [],
             tier: d["tier"]?.stringValue ?? "",
