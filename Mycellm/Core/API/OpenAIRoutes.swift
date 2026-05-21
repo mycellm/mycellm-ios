@@ -167,11 +167,16 @@ enum OpenAIRoutes {
     /// `body.reasoning.exclude` wins; otherwise fall back to the
     /// `hideReasoningByDefault` preference. iOS app default is true so
     /// chat UI looks clean for end users.
+    ///
+    /// Reads UserDefaults directly (instead of going through
+    /// @MainActor Preferences.shared) so this stays usable from any
+    /// task context — HTTP request handlers run off-main.
     static func resolveReasoningExclude(_ reasoning: ReasoningOptions?) -> Bool {
         if let exclude = reasoning?.exclude {
             return exclude
         }
-        return Preferences.shared.hideReasoningByDefault
+        // Mirrors Preferences.hideReasoningByDefault — default true.
+        return (UserDefaults.standard.object(forKey: "hide_reasoning_by_default") as? Bool) ?? true
     }
 }
 

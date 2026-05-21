@@ -170,7 +170,12 @@ enum ReasoningDialects {
 /// `close.count - 1` characters. Tolerates unclosed think blocks
 /// (flush emits the remainder as reasoning). Inert (always emits .content)
 /// when tag pair is nil.
-final class StreamingThinkSplitter {
+///
+/// @unchecked Sendable because the class holds mutable buffer state but
+/// is only ever used by a single task at a time (per-request handler).
+/// SSE handler captures the splitter in its async task; callers must
+/// not share an instance across tasks.
+final class StreamingThinkSplitter: @unchecked Sendable {
     enum Kind: Sendable {
         case content
         case reasoning
