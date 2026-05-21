@@ -67,24 +67,15 @@ actor HTTPServer {
             let data = try await request.body.collect(upTo: 1024 * 1024)
             let req = try JSONDecoder().decode(OpenAIRoutes.ChatCompletionRequest.self, from: Data(buffer: data))
 
-            // Honest "not implemented" rather than silent drop. v0.3.0 ships
-            // reasoning end-to-end but NOT tool/function calling — the
-            // engine signature doesn't take tools, the llama.cpp backend
-            // doesn't honor them, and the response shape can't carry
-            // tool_calls back. Returning 400 here so callers see the gap
-            // clearly. Tools wiring tracked for v0.3.1.
-            if let tools = req.tools, !tools.isEmpty {
-                return try Self.error(
-                    "Tool/function calling is not yet implemented on the iOS server. " +
-                    "Send the request without the `tools` field, or route to a " +
-                    "Python mycellm node which supports tools as of v0.3.0.",
-                    status: .badRequest
-                )
-            }
-
             let engine = nodeService.modelManager.engine
             let modelName = req.model
             let reasoningExclude = OpenAIRoutes.resolveReasoningExclude(req.reasoning)
+            let requestedTools = req.tools ?? []
+            // Tools + streaming aren't combined yet — the parser needs the
+            // full output to identify tool-call markup. Fall back to
+            // non-streaming when tools are present, matching Python's
+            // behaviour for v0.3.0.
+            let toolsForceNonStream = !requestedTools.isEmpty
             // Engine accepts dict messages — we still pass content as the
             // canonical text; tool_calls / tool_call_id / name carried via
             // the typed shape but flattened to plain strings here until
@@ -95,7 +86,7 @@ actor HTTPServer {
                 return d
             }
 
-            if req.stream ?? false {
+            if (req.stream ?? false) && !toolsForceNonStream {
                 let stream = await engine.stream(
                     messages: engineMessages,
                     temperature: req.temperature ?? 0.7,
@@ -154,7 +145,8 @@ actor HTTPServer {
                 let result = try await engine.complete(
                     messages: engineMessages,
                     temperature: req.temperature ?? 0.7,
-                    maxTokens: req.max_tokens ?? 2048
+                    maxTokens: req.max_tokens ?? 2048,
+                    tools: requestedTools
                 )
                 await MainActor.run {
                     nodeService.recordHTTPInference(model: req.model, tokens: result.promptTokens + result.completionTokens)
@@ -164,8 +156,20 @@ actor HTTPServer {
                 if !reasoning.isEmpty && !reasoningExclude {
                     message["reasoning_content"] = reasoning
                 }
+                if !result.toolCalls.isEmpty {
+                    // OpenAI shape: tool_calls is an array of
+                    // {id, type, function: {name, arguments}}.
+                    message["tool_calls"] = result.toolCalls.enumerated().map { i, c -> [String: Any] in
+                        [
+                            "id": "call_\(i)_\(c.name)",
+                            "type": "function",
+                            "function": ["name": c.name, "arguments": c.arguments],
+                        ]
+                    }
+                }
+                let finishReason: String = result.toolCalls.isEmpty ? "stop" : "tool_calls"
                 let response: [String: Any] = [
-                    "choices": [["message": message, "index": 0, "finish_reason": "stop"]],
+                    "choices": [["message": message, "index": 0, "finish_reason": finishReason]],
                     "usage": ["prompt_tokens": result.promptTokens, "completion_tokens": result.completionTokens, "total_tokens": result.promptTokens + result.completionTokens],
                     "model": req.model,
                 ]

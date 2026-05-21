@@ -284,7 +284,8 @@ final class NodeService: @unchecked Sendable {
     }
 
     func completeLocalInference(messages: [[String: String]], temperature: Double = 0.7, maxTokens: Int = 2048) async throws -> (text: String, promptTokens: Int, completionTokens: Int) {
-        return try await modelManager.engine.complete(messages: messages, temperature: temperature, maxTokens: maxTokens)
+        let result = try await modelManager.engine.complete(messages: messages, temperature: temperature, maxTokens: maxTokens)
+        return (result.text, result.promptTokens, result.completionTokens)
     }
 
     var hasLoadedModel: Bool { !modelManager.loadedModels.isEmpty }

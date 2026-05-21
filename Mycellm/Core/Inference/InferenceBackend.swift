@@ -33,6 +33,17 @@ struct InferenceResult: Sendable {
     let text: String
     let promptTokens: Int
     let completionTokens: Int
+    /// Tool calls parsed from the model's output, if any. Empty when no
+    /// tools were requested or the model didn't invoke any.
+    let toolCalls: [ToolCallParser.ParsedToolCall]
+
+    init(text: String, promptTokens: Int, completionTokens: Int,
+         toolCalls: [ToolCallParser.ParsedToolCall] = []) {
+        self.text = text
+        self.promptTokens = promptTokens
+        self.completionTokens = completionTokens
+        self.toolCalls = toolCalls
+    }
 }
 
 /// Protocol for pluggable inference backends.
@@ -56,18 +67,24 @@ protocol InferenceBackend: Actor {
     /// Unload the current model and free resources.
     func unloadModel()
 
-    /// Non-streaming completion.
+    /// Non-streaming completion. Optional tools array is injected into
+    /// the system prompt; the backend parses tool calls out of the model
+    /// output and surfaces them on InferenceResult.toolCalls.
     func complete(
         messages: [[String: String]],
         temperature: Double,
-        maxTokens: Int
+        maxTokens: Int,
+        tools: [OpenAIRoutes.Tool]
     ) async throws -> InferenceResult
 
-    /// Streaming completion — yields text chunks.
+    /// Streaming completion — yields text chunks. Tools are injected into
+    /// the system prompt but tool-call parsing is non-streaming-only for
+    /// v0.3.0 (callers requesting tools should set stream=false).
     func stream(
         messages: [[String: String]],
         temperature: Double,
-        maxTokens: Int
+        maxTokens: Int,
+        tools: [OpenAIRoutes.Tool]
     ) -> AsyncThrowingStream<String, Error>
 
     /// Reset context (clear KV cache) without unloading the model.

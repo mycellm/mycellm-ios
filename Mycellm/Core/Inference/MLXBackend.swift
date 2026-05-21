@@ -204,10 +204,10 @@ actor MLXBackend: InferenceBackend {
         )
     }
     func unloadModel() {}
-    func complete(messages: [[String: String]], temperature: Double, maxTokens: Int) async throws -> InferenceResult {
+    func complete(messages: [[String: String]], temperature: Double, maxTokens: Int, tools: [OpenAIRoutes.Tool]) async throws -> InferenceResult {
         throw MycellmError.inferenceError("MLX backend not available")
     }
-    func stream(messages: [[String: String]], temperature: Double, maxTokens: Int) -> AsyncThrowingStream<String, Error> {
+    func stream(messages: [[String: String]], temperature: Double, maxTokens: Int, tools: [OpenAIRoutes.Tool]) -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream { $0.finish(throwing: MycellmError.inferenceError("MLX backend not available")) }
     }
     func resetContext() throws {}
