@@ -2,8 +2,15 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>com.apple.developer.networking.multicast</key>
-	<true/>
+	<!--
+	  Multicast Networking entitlement intentionally NOT requested. Bonjour
+	  uses specific service types (_mycellm._tcp/udp in Info.plist NSBonjour-
+	  Services) which do not require this entitlement. Peer discovery beyond
+	  the LAN goes through the bootstrap + STUN/hole-punching (unicast UDP).
+	  If we ever add NWBrowser against arbitrary Bonjour service types or
+	  raw multicast/broadcast, request the entitlement at:
+	    https://developer.apple.com/contact/request/networking-multicast
+	-->
 	<!--
 	  Increased Memory Limit — required to load >3 GB models on devices with
 	  8 GB unified memory (iPhone 15 Pro, 16 Pro). On 12 GB devices (16 Pro
