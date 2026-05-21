@@ -1,0 +1,46 @@
+appId: com.mycellm.app
+---
+# On-Device mode chat — requires a model to be loaded first.
+# This flow assumes a model is already loaded via the Models tab
+# (or auto-loaded on previous launches). It just switches mode and
+# sends a prompt locally.
+
+- launchApp
+
+# Dismiss system prompts if any
+- runFlow:
+    when:
+      visible:
+        text: "Allow"
+    commands:
+      - tapOn: "Allow"
+- runFlow:
+    when:
+      visible:
+        text: "Got it"
+    commands:
+      - tapOn: "Got it"
+
+# Switch to on-device segment
+- runFlow:
+    when:
+      visible:
+        text: "Network"
+    commands:
+      - tapOn: "On-Device"
+      - waitForAnimationToEnd
+
+# Send a short prompt to keep the screenshot fast
+- tapOn:
+    id: "message-input"
+    optional: true
+- inputText: "Say hello."
+- tapOn:
+    text: "Send"
+
+- extendedWaitUntil:
+    notVisible:
+      text: "..."
+    timeout: 90000
+
+- takeScreenshot: out/03-on-device-chat

@@ -1,0 +1,72 @@
+appId: com.mycellm.app
+---
+# Single-flow capture of all marketing screens.
+# Tap each tab + scroll within Settings, taking a screenshot per scene.
+# Output filenames are 01-09 prefix so a directory listing shows them in
+# the intended marketing-spread order.
+
+- launchApp
+
+# Dismiss any first-launch prompts that might still appear
+- runFlow:
+    when:
+      visible:
+        text: "Allow"
+    commands:
+      - tapOn: "Allow"
+- runFlow:
+    when:
+      visible:
+        text: "Got it"
+    commands:
+      - tapOn: "Got it"
+
+# Scene 1: Dashboard (default landing)
+- tapOn:
+    text: "Dashboard"
+- waitForAnimationToEnd
+- takeScreenshot: out/01-dashboard
+
+# Scene 2: Chat (Network mode default)
+- tapOn:
+    text: "Chat"
+- waitForAnimationToEnd
+- takeScreenshot: out/02-chat-empty
+
+# Scene 3: Models — what models can run
+- tapOn:
+    text: "Models"
+- waitForAnimationToEnd
+- takeScreenshot: out/03-models
+
+# Scene 4: Network — peer view
+- tapOn:
+    text: "Network"
+- waitForAnimationToEnd
+- takeScreenshot: out/04-network
+
+# Scene 5: Settings overview
+- tapOn:
+    text: "Settings"
+- waitForAnimationToEnd
+- takeScreenshot: out/05-settings-overview
+
+# Scene 6: Settings — scroll to find Chat (reasoning toggle) section
+- swipe:
+    start: 50%, 70%
+    end: 50%, 30%
+- waitForAnimationToEnd
+- takeScreenshot: out/06-settings-reasoning
+
+# Scene 7: Settings — scroll to find Tip Jar
+- swipe:
+    start: 50%, 80%
+    end: 50%, 20%
+- swipe:
+    start: 50%, 80%
+    end: 50%, 20%
+- swipe:
+    start: 50%, 80%
+    end: 50%, 20%
+- waitForAnimationToEnd
+- takeScreenshot: out/07-tipjar

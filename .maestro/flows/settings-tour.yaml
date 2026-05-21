@@ -1,0 +1,43 @@
+appId: com.mycellm.app
+---
+# Settings tour — open Settings tab, scroll through the privacy guard,
+# chat (reasoning toggle), and tip jar sections taking a screenshot of
+# each region.
+
+- launchApp
+
+- runFlow:
+    when:
+      visible:
+        text: "Allow"
+    commands:
+      - tapOn: "Allow"
+- runFlow:
+    when:
+      visible:
+        text: "Got it"
+    commands:
+      - tapOn: "Got it"
+
+# Open Settings — bottom tab bar
+- tapOn:
+    text: "Settings"
+- waitForAnimationToEnd
+
+- takeScreenshot: out/04-settings-overview
+
+# Scroll down to Privacy Guard
+- scroll
+- takeScreenshot: out/05-settings-privacy
+
+# Scroll further to Chat (reasoning toggle)
+- scroll
+- takeScreenshot: out/06-settings-chat-reasoning
+
+# Scroll to Tip Jar (Support development)
+- scroll
+- scroll
+- assertVisible:
+    text: "Coffee"
+    optional: true
+- takeScreenshot: out/07-settings-tipjar

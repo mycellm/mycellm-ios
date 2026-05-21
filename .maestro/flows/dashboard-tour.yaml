@@ -1,0 +1,24 @@
+appId: com.mycellm.app
+---
+# Dashboard tour — primary node-status view with model + peer info.
+
+- launchApp
+
+- runFlow:
+    when:
+      visible:
+        text: "Allow"
+    commands:
+      - tapOn: "Allow"
+- runFlow:
+    when:
+      visible:
+        text: "Got it"
+    commands:
+      - tapOn: "Got it"
+
+- tapOn:
+    text: "Dashboard"
+- waitForAnimationToEnd
+
+- takeScreenshot: out/09-dashboard

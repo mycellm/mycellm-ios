@@ -1,0 +1,25 @@
+appId: com.mycellm.app
+---
+# Models tour — Models tab with the suggested-models picker visible.
+
+- launchApp
+
+- runFlow:
+    when:
+      visible:
+        text: "Allow"
+    commands:
+      - tapOn: "Allow"
+- runFlow:
+    when:
+      visible:
+        text: "Got it"
+    commands:
+      - tapOn: "Got it"
+
+# Open Models tab
+- tapOn:
+    text: "Models"
+- waitForAnimationToEnd
+
+- takeScreenshot: out/08-models-overview
