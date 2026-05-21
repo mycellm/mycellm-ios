@@ -178,7 +178,7 @@ enum OpenAIRoutes {
 /// Loose JSON value used inside Codable containers when the schema is opaque
 /// (e.g. arbitrary nested function-tool definitions). Round-trips dictionaries,
 /// arrays, strings, numbers, booleans, and null.
-struct AnyCodable: Codable, Sendable, @unchecked Sendable {
+struct AnyCodable: Codable, @unchecked Sendable {
     let value: Any
 
     init(_ value: Any) { self.value = value }
