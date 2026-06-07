@@ -23,7 +23,12 @@ actor LlamaCppBackend: InferenceBackend {
 
     // MARK: - Load / Unload
 
-    func loadModel(path: String, name: String) async throws {
+    /// Context length the active model was loaded with. Used by stream/
+    /// complete to size the prompt-fit budget so we don't truncate based
+    /// on an outdated 4K assumption.
+    private(set) var loadedCtxLen: Int = 4096
+
+    func loadModel(path: String, name: String, ctxLen: Int) async throws {
         guard FileManager.default.fileExists(atPath: path) else {
             throw MycellmError.inferenceError("File not found: \(path)")
         }
@@ -58,7 +63,7 @@ actor LlamaCppBackend: InferenceBackend {
         model = m
 
         var ctxParams = llama_context_default_params()
-        ctxParams.n_ctx = 4096
+        ctxParams.n_ctx = UInt32(ctxLen)
         ctxParams.n_batch = 512
         ctxParams.n_threads = Int32(max(1, ProcessInfo.processInfo.activeProcessorCount - 2))
 
@@ -69,6 +74,7 @@ actor LlamaCppBackend: InferenceBackend {
         }
         ctx = c
         loadedModel = name
+        loadedCtxLen = ctxLen
     }
 
     func unloadModel() {
@@ -83,12 +89,14 @@ actor LlamaCppBackend: InferenceBackend {
     func complete(
         messages: [[String: String]],
         temperature: Double,
-        maxTokens: Int
+        maxTokens: Int,
+        tools: [OpenAIRoutes.Tool]
     ) async throws -> InferenceResult {
         guard let model else { throw MycellmError.modelNotLoaded("No model loaded") }
         guard let ctx else { throw MycellmError.modelNotLoaded("No context available") }
 
-        let fitted = fitMessages(messages, model: model)
+        let augmented = injectToolsIntoSystem(messages, tools: tools)
+        let fitted = fitMessages(augmented, model: model)
         let prompt = applyChatTemplate(messages: fitted, model: model)
         var promptTokens = tokenize(text: prompt, model: model)
 
@@ -114,19 +122,35 @@ actor LlamaCppBackend: InferenceBackend {
         let elapsed = Date().timeIntervalSince(startTime)
         tokensPerSecond = elapsed > 0 ? Double(outputTokens.count) / elapsed : 0
 
-        let text = detokenize(tokens: outputTokens, model: model)
-        return InferenceResult(text: text, promptTokens: promptTokens.count, completionTokens: outputTokens.count)
+        let rawText = detokenize(tokens: outputTokens, model: model)
+        // Parse tool calls out of raw output only when caller actually
+        // requested tools. Avoids false positives on plain JSON content.
+        if tools.isEmpty {
+            return InferenceResult(text: rawText, promptTokens: promptTokens.count, completionTokens: outputTokens.count)
+        }
+        let parsed = ToolCallParser.extract(from: rawText)
+        return InferenceResult(
+            text: parsed.residualContent,
+            promptTokens: promptTokens.count,
+            completionTokens: outputTokens.count,
+            toolCalls: parsed.toolCalls
+        )
     }
 
     func stream(
         messages: [[String: String]],
         temperature: Double,
-        maxTokens: Int
+        maxTokens: Int,
+        tools: [OpenAIRoutes.Tool]
     ) -> AsyncThrowingStream<String, Error> {
         let (stream, continuation) = AsyncThrowingStream<String, Error>.makeStream()
         Task {
             do {
-                try await self.streamImpl(messages: messages, temperature: temperature, maxTokens: maxTokens, continuation: continuation)
+                try await self.streamImpl(
+                    messages: messages, temperature: temperature,
+                    maxTokens: maxTokens, tools: tools,
+                    continuation: continuation
+                )
             } catch {
                 continuation.finish(throwing: error)
             }
@@ -134,16 +158,43 @@ actor LlamaCppBackend: InferenceBackend {
         return stream
     }
 
+    /// Inject a tool-use system-prompt addendum so the model knows what
+    /// tools exist. We use the first system message if present, else we
+    /// insert a new system message at index 0. This mirrors what the
+    /// HF apply_chat_template does for Qwen/Hermes when given `tools=`,
+    /// keeping us compatible without needing the tokenizer in scope.
+    private func injectToolsIntoSystem(
+        _ messages: [[String: String]],
+        tools: [OpenAIRoutes.Tool]
+    ) -> [[String: String]] {
+        guard !tools.isEmpty else { return messages }
+        let addendum = ToolCallParser.formatToolsForSystemPrompt(tools)
+        guard !addendum.isEmpty else { return messages }
+
+        var result = messages
+        if let firstSystemIdx = result.firstIndex(where: { $0["role"] == "system" }) {
+            let existing = result[firstSystemIdx]["content"] ?? ""
+            result[firstSystemIdx]["content"] = existing.isEmpty
+                ? addendum
+                : existing + "\n\n" + addendum
+        } else {
+            result.insert(["role": "system", "content": addendum], at: 0)
+        }
+        return result
+    }
+
     private func streamImpl(
         messages: [[String: String]],
         temperature: Double,
         maxTokens: Int,
+        tools: [OpenAIRoutes.Tool],
         continuation: AsyncThrowingStream<String, Error>.Continuation
     ) async throws {
         guard let model else { throw MycellmError.modelNotLoaded("No model loaded") }
         guard let ctx else { throw MycellmError.modelNotLoaded("No context available") }
 
-        let fitted = fitMessages(messages, model: model)
+        let augmented = injectToolsIntoSystem(messages, tools: tools)
+        let fitted = fitMessages(augmented, model: model)
         let prompt = applyChatTemplate(messages: fitted, model: model)
         var promptTokens = tokenize(text: prompt, model: model)
 
@@ -183,7 +234,7 @@ actor LlamaCppBackend: InferenceBackend {
         if let c = ctx { llama_free(c) }
 
         var ctxParams = llama_context_default_params()
-        ctxParams.n_ctx = 4096
+        ctxParams.n_ctx = UInt32(loadedCtxLen)
         ctxParams.n_batch = 512
         ctxParams.n_threads = Int32(max(1, ProcessInfo.processInfo.activeProcessorCount - 2))
 
@@ -215,7 +266,9 @@ actor LlamaCppBackend: InferenceBackend {
     // MARK: - Context Window Management
 
     private func fitMessages(_ messages: [[String: String]], model: OpaquePointer) -> [[String: String]] {
-        let maxPromptTokens = 4096 - 512
+        // Reserve 512 tokens for the model's response. Budget scales with
+        // the context window the model was actually loaded with.
+        let maxPromptTokens = max(512, loadedCtxLen - 512)
 
         let fullPrompt = applyChatTemplate(messages: messages, model: model)
         let fullTokens = tokenize(text: fullPrompt, model: model)

@@ -37,7 +37,7 @@ actor InferenceEngine {
 
     // MARK: - Load / Unload
 
-    func loadModel(path: String, name: String) async throws {
+    func loadModel(path: String, name: String, ctxLen: Int) async throws {
         let format = ModelFormat.detect(path: path)
 
         // Select backend based on model format
@@ -56,7 +56,7 @@ actor InferenceEngine {
 
         state = .loading(name)
         do {
-            try await newBackend.loadModel(path: path, name: name)
+            try await newBackend.loadModel(path: path, name: name, ctxLen: ctxLen)
             backend = newBackend
             currentModel = name
             tokensPerSecond = 0
@@ -79,11 +79,14 @@ actor InferenceEngine {
 
     // MARK: - Inference
 
+    /// Non-streaming completion. Returns text + token counts + any
+    /// tool_calls parsed by the backend from the model's raw output.
     func complete(
         messages: [[String: String]],
         temperature: Double = 0.7,
-        maxTokens: Int = 2048
-    ) async throws -> (text: String, promptTokens: Int, completionTokens: Int) {
+        maxTokens: Int = 2048,
+        tools: [OpenAIRoutes.Tool] = []
+    ) async throws -> InferenceResult {
         guard let backend else {
             throw MycellmError.modelNotLoaded("No model loaded")
         }
@@ -91,15 +94,21 @@ actor InferenceEngine {
         state = .inferring(currentModel ?? "")
         defer { state = .ready(currentModel ?? "") }
 
-        let result = try await backend.complete(messages: messages, temperature: temperature, maxTokens: maxTokens)
+        let result = try await backend.complete(
+            messages: messages,
+            temperature: temperature,
+            maxTokens: maxTokens,
+            tools: tools
+        )
         tokensPerSecond = await backend.tokensPerSecond
-        return (result.text, result.promptTokens, result.completionTokens)
+        return result
     }
 
     func stream(
         messages: [[String: String]],
         temperature: Double = 0.7,
-        maxTokens: Int = 2048
+        maxTokens: Int = 2048,
+        tools: [OpenAIRoutes.Tool] = []
     ) -> AsyncThrowingStream<String, Error> {
         guard let backend else {
             return AsyncThrowingStream { $0.finish(throwing: MycellmError.modelNotLoaded("No model loaded")) }
@@ -111,7 +120,12 @@ actor InferenceEngine {
         return AsyncThrowingStream { continuation in
             Task { [weak self] in
                 do {
-                    let inner = await capturedBackend.stream(messages: messages, temperature: temperature, maxTokens: maxTokens)
+                    let inner = await capturedBackend.stream(
+                        messages: messages,
+                        temperature: temperature,
+                        maxTokens: maxTokens,
+                        tools: tools
+                    )
                     for try await chunk in inner {
                         continuation.yield(chunk)
                     }

@@ -110,9 +110,32 @@ final class Preferences: @unchecked Sendable {
     // MARK: - Inference
 
     /// Default context window for loaded models. Explicit ctx_len on
-    /// load requests still wins. Mirrors MYCELLM_DEFAULT_CTX_LEN.
+    /// load requests still wins.
+    ///
+    /// Unlike Python's MYCELLM_DEFAULT_CTX_LEN=32768, iOS defaults scale
+    /// with device physical memory. llama.cpp / MLX allocate KV-cache
+    /// AND activation buffers sized by n_ctx, so a 32K context can OOM
+    /// Metal on an 8 GB phone even before any tokens are generated.
+    /// Recommended tier (matches Apple's per-device memory caps with
+    /// the increased-memory-limit entitlement):
+    ///
+    ///   tier         RAM          default ctx
+    ///   ─────────────────────────────────────
+    ///   phone-base    6-8 GB      4096
+    ///   phone-pro    12 GB        8192
+    ///   tablet-pro   16+ GB      16384
+    ///
+    /// Users can override via the Settings UI or per-load HTTP body.
     var defaultCtxLen: Int {
-        get { defaults.integer(forKey: "default_ctx_len").nonZero ?? 32768 }
+        get {
+            if let n = defaults.object(forKey: "default_ctx_len") as? Int, n > 0 {
+                return n
+            }
+            let gb = HardwareInfo.totalMemoryGB
+            if gb >= 14 { return 16384 }
+            if gb >= 10 { return 8192 }
+            return 4096
+        }
         set { defaults.set(newValue, forKey: "default_ctx_len") }
     }
 
