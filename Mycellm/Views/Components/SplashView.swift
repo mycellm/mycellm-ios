@@ -58,7 +58,7 @@ struct SplashView: View {
                                     ? Color(red: 74/255, green: 222/255, blue: 128/255)
                                     : Color(white: 0.4))
                         }
-                        .font(.system(size: 10, weight: .regular, design: .monospaced))
+                        .font(.system(size: 12, weight: .regular, design: .monospaced))
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)

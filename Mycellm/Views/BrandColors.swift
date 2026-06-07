@@ -35,6 +35,11 @@ extension Color {
 
 /// Brand font helpers — JetBrains Mono to match web dashboard.
 extension Font {
+    /// Pre-TF baseline bump (+2pt). Sizes still fixed (no Dynamic Type) —
+    /// this just raises legibility for Larger Text users until a proper
+    /// `relativeTo:` pass lands post-TF.
+    static let monoBaselineBump: CGFloat = 2
+
     static func mono(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
         let name: String
         switch weight {
@@ -43,6 +48,6 @@ extension Font {
         case .medium: name = "JetBrainsMono-Medium"
         default: name = "JetBrainsMono-Regular"
         }
-        return Font.custom(name, size: size)
+        return Font.custom(name, size: size + Self.monoBaselineBump)
     }
 }

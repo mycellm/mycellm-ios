@@ -340,7 +340,7 @@ struct ChatView: View {
     private var aiDisclaimer: some View {
         HStack(spacing: 6) {
             Image(systemName: "info.circle")
-                .font(.system(size: 10))
+                .font(.system(size: 12))
             Text("AI responses may be inaccurate. Verify important information.")
                 .font(.mono(9))
             Spacer()
@@ -348,7 +348,7 @@ struct ChatView: View {
                 withAnimation { disclaimerDismissed = true }
             } label: {
                 Image(systemName: "xmark")
-                    .font(.system(size: 9))
+                    .font(.system(size: 11))
             }
             .buttonStyle(.plain)
         }
@@ -400,7 +400,7 @@ struct ChatView: View {
                 HStack {
                     Button { showSessionList = true } label: {
                         Image(systemName: "list.bullet")
-                            .font(.system(size: 14))
+                            .font(.system(size: 16))
                             .foregroundStyle(Color.consoleDim)
                     }
                     .buttonStyle(.plain)
@@ -414,13 +414,13 @@ struct ChatView: View {
 
                     if isPrivateSession {
                         Image(systemName: "eye.slash.fill")
-                            .font(.system(size: 12))
+                            .font(.system(size: 14))
                             .foregroundStyle(Color.poisonPurple.opacity(0.8))
                     }
 
                     Button { exportCurrentSession() } label: {
                         Image(systemName: "square.and.arrow.up")
-                            .font(.system(size: 14))
+                            .font(.system(size: 16))
                             .foregroundStyle(Color.consoleDim)
                     }
                     .buttonStyle(.plain)
@@ -428,7 +428,7 @@ struct ChatView: View {
 
                     Button { newSession() } label: {
                         Image(systemName: "plus.circle.fill")
-                            .font(.system(size: 20))
+                            .font(.system(size: 22))
                             .foregroundStyle(messages.isEmpty ? Color.consoleDim : Color.sporeGreen)
                     }
                     .buttonStyle(.plain)
@@ -467,7 +467,7 @@ struct ChatView: View {
 
     private func routeToggleLabel(_ r: ChatRoute) -> some View {
         HStack(spacing: 4) {
-            Image(systemName: r.icon).font(.system(size: 11))
+            Image(systemName: r.icon).font(.system(size: 13))
             Text(r.rawValue).font(.mono(12, weight: .medium))
         }
         .padding(.horizontal, 12)
@@ -575,7 +575,7 @@ struct ChatView: View {
         if !scanResult.matches.isEmpty && route == .network {
             HStack(spacing: 6) {
                 Image(systemName: scanResult.highestSeverity == .high ? "exclamationmark.shield.fill" : "shield.fill")
-                    .font(.system(size: 11))
+                    .font(.system(size: 13))
                 Text(scanResult.highestSeverity == .high
                     ? "Sensitive data detected — will route locally"
                     : "\(scanResult.matches.count) potential PII detected")
@@ -642,7 +642,7 @@ struct ChatView: View {
             Image(systemName: isGenerating ? "stop.circle.fill"
                 : scanResult.highestSeverity == .high ? "shield.fill"
                 : "arrow.right.circle.fill")
-                .font(.system(size: 28))
+                .font(.system(size: 30))
                 .foregroundStyle(sendButtonColor)
         }
         .disabled(inputText.isEmpty && !isGenerating)
@@ -1153,7 +1153,7 @@ struct MessageBubble: View {
                 .textSelection(.enabled)
         } else {
             Text(LocalizedStringKey(message.content))
-                .font(.system(size: 14))
+                .font(.system(size: 16))
                 .foregroundStyle(Color.consoleText)
                 .textSelection(.enabled)
                 .tint(Color.relayBlue)
@@ -1193,12 +1193,12 @@ struct MessageBubble: View {
     private var routeBadge: some View {
         if message.routedVia == "network" {
             HStack(spacing: 2) {
-                Image(systemName: "globe").font(.system(size: 7))
+                Image(systemName: "globe").font(.system(size: 9))
                 Text("network").font(.mono(8))
             }.foregroundStyle(Color.relayBlue)
         } else if message.routedVia == "on-device" {
             HStack(spacing: 2) {
-                Image(systemName: "ipad").font(.system(size: 7))
+                Image(systemName: "ipad").font(.system(size: 9))
                 Text("on-device").font(.mono(8))
             }.foregroundStyle(Color.sporeGreen)
         }
@@ -1209,7 +1209,7 @@ struct MessageBubble: View {
         if message.isError, let onRetry {
             Button { onRetry() } label: {
                 HStack(spacing: 4) {
-                    Image(systemName: "arrow.clockwise").font(.system(size: 10))
+                    Image(systemName: "arrow.clockwise").font(.system(size: 12))
                     Text("Retry").font(.mono(10, weight: .medium))
                 }
                 .foregroundStyle(Color.relayBlue)
@@ -1338,9 +1338,9 @@ struct ReasoningDisclosure: View {
             Button(action: { withAnimation(.easeInOut(duration: 0.15)) { isExpanded.toggle() } }) {
                 HStack(spacing: 6) {
                     Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-                        .font(.system(size: 10, weight: .medium))
+                        .font(.system(size: 12, weight: .medium))
                     Image(systemName: "sparkles")
-                        .font(.system(size: 10))
+                        .font(.system(size: 12))
                     Text("Reasoning")
                         .font(.mono(11, weight: .medium))
                     Text("(\(lineCount) lines)")

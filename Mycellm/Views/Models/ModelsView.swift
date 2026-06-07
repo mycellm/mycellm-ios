@@ -55,7 +55,7 @@ struct ModelsView: View {
                         }
                     } label: {
                         Image(systemName: "plus.circle.fill")
-                            .font(.system(size: 20))
+                            .font(.system(size: 22))
                             .foregroundStyle(Color.sporeGreen)
                     }
                 }
@@ -190,7 +190,7 @@ struct ModelsView: View {
                         modelManager.removeAPIModel(name: model.name)
                     } label: {
                         Image(systemName: "xmark.circle.fill")
-                            .font(.system(size: 14))
+                            .font(.system(size: 16))
                             .foregroundStyle(Color.computeRed)
                     }
                 }
@@ -231,7 +231,7 @@ struct ModelsView: View {
                         node.relayManager.remove(url: relay.url)
                     } label: {
                         Image(systemName: "xmark.circle.fill")
-                            .font(.system(size: 14))
+                            .font(.system(size: 16))
                             .foregroundStyle(Color.computeRed)
                     }
                 }
@@ -760,7 +760,7 @@ private struct RelaySheet: View {
                                 Button {
                                     relayManager.remove(url: relay.url)
                                 } label: {
-                                    Image(systemName: "trash").font(.system(size: 12))
+                                    Image(systemName: "trash").font(.system(size: 14))
                                         .foregroundStyle(Color.computeRed)
                                 }
                             }
@@ -877,7 +877,7 @@ struct EmptyState: View {
     let icon: String
     var body: some View {
         VStack(spacing: 8) {
-            Image(systemName: icon).font(.system(size: 24)).foregroundStyle(Color.consoleDim)
+            Image(systemName: icon).font(.system(size: 26)).foregroundStyle(Color.consoleDim)
             Text(message).font(.mono(12)).foregroundStyle(Color.consoleDim)
         }
         .frame(maxWidth: .infinity).padding(.vertical, 24)

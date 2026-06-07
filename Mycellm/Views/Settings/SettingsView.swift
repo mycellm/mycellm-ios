@@ -26,7 +26,7 @@ struct SettingsView: View {
                 storageSection
                 telemetrySection
                 aboutSection
-                tipJarSection
+                // tipJarSection — hidden until post-TestFlight; StoreKit IAP + sheet code preserved
                 footerSection
             }
             .scrollContentBackground(.hidden)
@@ -53,7 +53,7 @@ struct SettingsView: View {
                         UIPasteboard.general.string = node.peerId
                     } label: {
                         Image(systemName: "doc.on.doc")
-                            .font(.system(size: 12))
+                            .font(.system(size: 14))
                     }
                 }
             }
@@ -152,7 +152,7 @@ struct SettingsView: View {
                                 .font(.mono(12))
                                 .foregroundStyle(Color.consoleDim)
                             Image(systemName: "chevron.right")
-                                .font(.system(size: 10))
+                                .font(.system(size: 12))
                                 .foregroundStyle(Color.consoleDim)
                         }
                     }
@@ -363,7 +363,7 @@ struct SettingsView: View {
                             .foregroundStyle(Color.computeRed)
                     }
                     Image(systemName: "chevron.right")
-                        .font(.system(size: 10))
+                        .font(.system(size: 12))
                         .foregroundStyle(Color.consoleDim)
                 }
             }

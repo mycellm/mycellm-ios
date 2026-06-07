@@ -190,7 +190,7 @@ struct DashboardView: View {
                     Spacer()
                     VStack(spacing: 6) {
                         Image(systemName: "sparkle")
-                            .font(.system(size: 20))
+                            .font(.system(size: 22))
                             .foregroundStyle(Color.consoleDim.opacity(0.5))
                         Text("No recent activity")
                             .font(.mono(11))
@@ -220,7 +220,7 @@ private struct ActivityRow: View {
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: event.icon)
-                .font(.system(size: 10))
+                .font(.system(size: 12))
                 .foregroundStyle(color)
                 .frame(width: 14, height: 14)
             Text(event.description)
@@ -271,7 +271,7 @@ struct MetricCard: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Image(systemName: icon)
-                    .font(.system(size: 12))
+                    .font(.system(size: 14))
                     .foregroundStyle(color)
                 Text(title)
                     .font(.mono(11, weight: .medium))

@@ -31,7 +31,7 @@ struct PeersView: View {
                             showJoinSheet = true
                         } label: {
                             Image(systemName: "plus.circle.fill")
-                                .font(.system(size: 20))
+                                .font(.system(size: 22))
                                 .foregroundStyle(Color.sporeGreen)
                         }
                     }
@@ -56,7 +56,7 @@ struct PeersView: View {
             if !node.networkRegistry.canJoinNewNetworks {
                 HStack(spacing: 6) {
                     Image(systemName: "lock.fill")
-                        .font(.system(size: 10))
+                        .font(.system(size: 12))
                     Text("Fleet policy restricts joining additional networks")
                         .font(.mono(10))
                 }
@@ -72,7 +72,7 @@ struct PeersView: View {
             // Header: name + status
             HStack(spacing: 10) {
                 Image(systemName: membership.id == "public" ? "globe" : "lock.fill")
-                    .font(.system(size: 14))
+                    .font(.system(size: 16))
                     .foregroundStyle(membership.id == "public" ? Color.relayBlue : Color.poisonPurple)
 
                 VStack(alignment: .leading, spacing: 2) {
@@ -130,7 +130,7 @@ struct PeersView: View {
                 if membership.fleetKey != nil {
                     HStack(spacing: 2) {
                         Image(systemName: "antenna.radiowaves.left.and.right")
-                            .font(.system(size: 8))
+                            .font(.system(size: 10))
                         Text("Fleet")
                             .font(.mono(9))
                     }
@@ -168,7 +168,7 @@ struct PeersView: View {
             // Credits for this network
             HStack(spacing: 8) {
                 Image(systemName: "dollarsign.circle")
-                    .font(.system(size: 10))
+                    .font(.system(size: 12))
                     .foregroundStyle(Color.ledgerGold)
                 if membership.id == "public" {
                     Text(String(format: "%.1f credits", node.stats.creditBalance))
@@ -209,7 +209,7 @@ struct PeersView: View {
         }
         return HStack(spacing: 3) {
             Image(systemName: icon)
-                .font(.system(size: 8))
+                .font(.system(size: 10))
             Text(level.displayName)
                 .font(.mono(9))
         }
