@@ -80,18 +80,23 @@ actor HTTPServer {
             // canonical text; tool_calls / tool_call_id / name carried via
             // the typed shape but flattened to plain strings here until
             // the backends understand tool-call message roles natively.
-            let engineMessages: [[String: String]] = req.messages.map { m in
-                var d: [String: String] = ["role": m.role]
-                if let c = m.content { d["content"] = c }
-                return d
-            }
+            // Build multimodal messages once. Requests carrying images route to
+            // the engine's VLM path; text-only requests keep the exact
+            // [[String:String]] path below (no behavior change).
+            let mmMessages = req.messages.map { $0.asMultimodal() }
+            let engineMessages: [[String: String]] = mmMessages.asTextMessages
+            let hasImages = mmMessages.hasImages
 
             if (req.stream ?? false) && !toolsForceNonStream {
-                let stream = await engine.stream(
-                    messages: engineMessages,
-                    temperature: req.temperature ?? 0.7,
-                    maxTokens: req.max_tokens ?? 2048
-                )
+                let stream = hasImages
+                    ? await engine.stream(
+                        multimodal: mmMessages,
+                        temperature: req.temperature ?? 0.7,
+                        maxTokens: req.max_tokens ?? 2048)
+                    : await engine.stream(
+                        messages: engineMessages,
+                        temperature: req.temperature ?? 0.7,
+                        maxTokens: req.max_tokens ?? 2048)
                 // Per-stream <think>-splitter routes tokens to delta.content
                 // vs delta.reasoning_content. No-op for non-thinking models.
                 let splitter = StreamingThinkSplitter(modelName: modelName)
@@ -142,12 +147,17 @@ actor HTTPServer {
                     body: .init(asyncSequence: sseStream)
                 )
             } else {
-                let result = try await engine.complete(
-                    messages: engineMessages,
-                    temperature: req.temperature ?? 0.7,
-                    maxTokens: req.max_tokens ?? 2048,
-                    tools: requestedTools
-                )
+                let result = hasImages
+                    ? try await engine.complete(
+                        multimodal: mmMessages,
+                        temperature: req.temperature ?? 0.7,
+                        maxTokens: req.max_tokens ?? 2048,
+                        tools: requestedTools)
+                    : try await engine.complete(
+                        messages: engineMessages,
+                        temperature: req.temperature ?? 0.7,
+                        maxTokens: req.max_tokens ?? 2048,
+                        tools: requestedTools)
                 await MainActor.run {
                     nodeService.recordHTTPInference(model: req.model, tokens: result.promptTokens + result.completionTokens)
                 }

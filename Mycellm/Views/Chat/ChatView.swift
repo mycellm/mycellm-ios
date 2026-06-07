@@ -1,5 +1,6 @@
 import SwiftUI
 import SwiftData
+import PhotosUI
 
 /// Chat routing: where inference runs.
 enum ChatRoute: String, CaseIterable, Identifiable {
@@ -20,6 +21,10 @@ struct ChatView: View {
     @Environment(NodeService.self) private var node
     @Environment(\.modelContext) private var modelContext
     @State private var inputText = ""
+    /// Images attached to the next message (decoded bytes), plus the raw
+    /// PhotosPicker selection that populates them.
+    @State private var pendingImages: [Data] = []
+    @State private var photoItems: [PhotosPickerItem] = []
     @State private var messages: [DisplayMessage] = []
     @State private var route: ChatRoute = ChatRoute(rawValue: Preferences.shared.chatRoute) ?? .network
     @State private var isGenerating = false
@@ -43,6 +48,9 @@ struct ChatView: View {
         let id: UUID
         let role: String
         var content: String
+        /// Attached image bytes (PNG/JPEG) for vision turns. Empty for text —
+        /// so existing text messages are unaffected.
+        var images: [Data] = []
         var tokenCount: Int
         var routedVia: String
         var sourceNode: String = ""
@@ -560,6 +568,7 @@ struct ChatView: View {
     private var inputBar: some View {
         VStack(spacing: 0) {
             sensitiveWarningBanner
+            attachmentStrip
             inputRow
         }
         .alert("Sensitive Data Detected", isPresented: $showSensitiveAlert) {
@@ -597,8 +606,64 @@ struct ChatView: View {
         return "This message contains:\n\(labels)\n\nIt would be sent to untrusted nodes on the public network."
     }
 
+    /// Thumbnails of images attached to the next message, with remove buttons.
+    @ViewBuilder
+    private var attachmentStrip: some View {
+        if !pendingImages.isEmpty {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(Array(pendingImages.enumerated()), id: \.offset) { idx, data in
+                        if let img = UIImage(data: data) {
+                            Image(uiImage: img)
+                                .resizable().scaledToFill()
+                                .frame(width: 44, height: 44)
+                                .clipShape(RoundedRectangle(cornerRadius: 6))
+                                .overlay(alignment: .topTrailing) {
+                                    Button {
+                                        pendingImages.remove(at: idx)
+                                    } label: {
+                                        Image(systemName: "xmark.circle.fill")
+                                            .font(.system(size: 14))
+                                            .foregroundStyle(.white, Color.black.opacity(0.6))
+                                    }
+                                    .offset(x: 4, y: -4)
+                                }
+                        }
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.top, 8)
+            }
+        }
+    }
+
+    /// Load the PhotosPicker selection into `pendingImages` as encoded bytes.
+    private func loadPickedPhotos(_ items: [PhotosPickerItem]) {
+        Task {
+            var loaded: [Data] = []
+            for item in items {
+                if let data = try? await item.loadTransferable(type: Data.self) {
+                    loaded.append(data)
+                }
+            }
+            await MainActor.run {
+                pendingImages.append(contentsOf: loaded)
+                photoItems = []
+            }
+        }
+    }
+
     private var inputRow: some View {
         HStack(alignment: .bottom, spacing: 12) {
+            PhotosPicker(selection: $photoItems, maxSelectionCount: 4, matching: .images) {
+                Image(systemName: "photo.on.rectangle")
+                    .font(.system(size: 22))
+                    .foregroundStyle(Color.consoleDim)
+            }
+            .onChange(of: photoItems) { _, items in
+                if !items.isEmpty { loadPickedPhotos(items) }
+            }
+
             TextField("Type a message…", text: $inputText, prompt: Text("Type a message…").foregroundStyle(Color.consoleDim.opacity(0.8)), axis: .vertical)
                 .font(.mono(14))
                 .foregroundStyle(Color.consoleText)
@@ -645,7 +710,7 @@ struct ChatView: View {
                 .font(.system(size: 28))
                 .foregroundStyle(sendButtonColor)
         }
-        .disabled(inputText.isEmpty && !isGenerating)
+        .disabled(inputText.isEmpty && pendingImages.isEmpty && !isGenerating)
     }
 
     private var sendButtonColor: Color {
@@ -658,23 +723,31 @@ struct ChatView: View {
 
     private func sendMessage() {
         let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
+        let attachedImages = pendingImages
+        // Allow sending an image with no text (e.g. "what's this?" implied).
+        guard !text.isEmpty || !attachedImages.isEmpty else { return }
 
+        // Images run on-device only (VLM is a local MLX backend); if the user
+        // attached an image, force the on-device route.
         let effectiveRoute: ChatRoute
-        if scanResult.action == .blockRedirect && route == .network {
+        if !attachedImages.isEmpty {
+            effectiveRoute = .onDevice
+        } else if scanResult.action == .blockRedirect && route == .network {
             effectiveRoute = .onDevice
         } else {
             effectiveRoute = route
         }
 
         inputText = ""
+        pendingImages = []
         scanResult = SensitiveDataGuard.ScanResult(matches: [], action: .allow, highestSeverity: nil)
 
         // Dismiss keyboard on send in landscape (reclaim screen space)
         UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
 
         let userRoute = effectiveRoute == .network ? "network" : "on-device"
-        let userMsg = DisplayMessage(role: "user", content: text, routedVia: userRoute)
+        var userMsg = DisplayMessage(role: "user", content: text, routedVia: userRoute)
+        userMsg.images = attachedImages
         messages.append(userMsg)
         persist(userMsg)
 
@@ -705,12 +778,22 @@ struct ChatView: View {
         messages.append(placeholder)
         let responseId = placeholder.id
 
-        let chatMessages = messages.dropLast().map { ["role": $0.role, "content": $0.content] }
+        let history = Array(messages.dropLast())
+        let conversationHasImages = history.contains { !$0.images.isEmpty }
 
         streamTask = Task {
             do {
                 var tokenCount = 0
-                let stream = await node.streamLocalInference(messages: Array(chatMessages))
+                let stream: AsyncThrowingStream<String, Error>
+                if conversationHasImages {
+                    let mm = history.map {
+                        MultimodalMessage(role: $0.role, text: $0.content, images: $0.images)
+                    }
+                    stream = await node.streamLocalInference(multimodal: mm)
+                } else {
+                    let chatMessages = history.map { ["role": $0.role, "content": $0.content] }
+                    stream = await node.streamLocalInference(messages: chatMessages)
+                }
                 for try await chunk in stream {
                     if Task.isCancelled { break }
                     mutate(responseId) { $0.content += chunk }
