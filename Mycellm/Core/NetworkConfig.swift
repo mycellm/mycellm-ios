@@ -33,5 +33,5 @@ enum NetworkConfig {
     /// NodeService (peer hello), and Capabilities all read this. Bump when
     /// upstream Python mycellm cuts a release that changes the wire
     /// protocol or the OpenAI-API surface that iOS mirrors.
-    static let version = "0.3.0"
+    static let version = "0.4.0"
 }

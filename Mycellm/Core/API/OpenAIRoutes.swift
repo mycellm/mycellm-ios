@@ -97,7 +97,8 @@ enum OpenAIRoutes {
         let trust: String?
     }
 
-    /// POST /v1/chat/completions request body. Full v0.3.0 surface.
+    /// POST /v1/chat/completions request body. Full v0.4.0 surface
+    /// (incl. multimodal `content` arrays).
     struct ChatCompletionRequest: Codable, Sendable {
         let model: String
         let messages: [Message]
