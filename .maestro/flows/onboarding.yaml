@@ -1,0 +1,31 @@
+appId: com.mycellm.app
+---
+# Onboarding flow — runs on first launch.
+# Dismisses the local-network permission prompt and the AI disclaimer
+# banner so subsequent flows start on a clean Chat tab.
+
+- launchApp
+
+# Local network permission alert (iOS system prompt)
+- runFlow:
+    when:
+      visible:
+        text: "Allow"
+    commands:
+      - tapOn: "Allow"
+
+# Mycellm's AI disclaimer banner — accept it once
+- runFlow:
+    when:
+      visible:
+        text: "Got it"
+    commands:
+      - tapOn: "Got it"
+      - waitForAnimationToEnd
+
+# At rest on the chat tab — verify with the chat input
+- assertVisible:
+    text: "Network"
+    optional: true
+
+- takeScreenshot: out/01-onboarded

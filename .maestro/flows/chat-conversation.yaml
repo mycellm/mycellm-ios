@@ -1,0 +1,49 @@
+appId: com.mycellm.app
+---
+# Polished chat screenshot — sends a real prompt through Network mode
+# (which routes to api.mycellm.dev) and screenshots the populated chat
+# with a real assistant response. Used for App Store marketing.
+
+- launchApp
+- runFlow:
+    when:
+      visible: "Got it"
+    commands:
+      - tapOn: "Got it"
+
+# Switch to Chat tab
+- tapOn: "Chat"
+- waitForAnimationToEnd
+
+# Ensure Network mode (not On-Device — Network responds in ~1s)
+- runFlow:
+    when:
+      visible: "On-Device"
+    commands:
+      - tapOn:
+          text: "Network"
+          enabled: true
+
+# Tap the input field (the message-input bar at the bottom)
+- tapOn:
+    point: "50%, 95%"
+
+# A short prompt that's likely to get a clean, marketable response
+- inputText: "Explain how distributed AI works in two sentences"
+
+# Send — the right-arrow button at bottom-right
+- tapOn:
+    point: "95%, 95%"
+
+# Wait for assistant response to finish streaming.
+# Network mode against api.mycellm.dev should respond in under 10s; the
+# extended wait covers slower networks or cold-start cases.
+- extendedWaitUntil:
+    visible:
+      text: "distributed"
+    timeout: 30000
+
+# Give the streaming a beat to finish + scroll settles
+- waitForAnimationToEnd
+
+- takeScreenshot: out/chat-conversation

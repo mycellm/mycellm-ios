@@ -1,0 +1,47 @@
+appId: com.mycellm.app
+---
+# Network mode chat — sends a single message through the public bootstrap
+# and waits for the response to render. Takes a screenshot of the chat
+# with the assistant's reply visible.
+
+- launchApp
+
+# Skip any leftover system prompts
+- runFlow:
+    when:
+      visible:
+        text: "Allow"
+    commands:
+      - tapOn: "Allow"
+- runFlow:
+    when:
+      visible:
+        text: "Got it"
+    commands:
+      - tapOn: "Got it"
+
+# Ensure we're in Network mode (tap "Network" segment if "On-Device" is selected)
+- runFlow:
+    when:
+      visible:
+        text: "On-Device"
+    commands:
+      - tapOn: "Network"
+      - waitForAnimationToEnd
+
+# Tap the input field and send a curated prompt
+- tapOn:
+    id: "message-input"
+    optional: true
+- inputText: "What can you do?"
+- tapOn:
+    text: "Send"
+
+# Wait for the assistant's reply to render. The streaming indicator goes
+# away once the response completes.
+- extendedWaitUntil:
+    notVisible:
+      text: "..."
+    timeout: 60000
+
+- takeScreenshot: out/02-network-chat
