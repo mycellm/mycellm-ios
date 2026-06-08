@@ -165,6 +165,13 @@ final class Preferences: @unchecked Sendable {
         set { defaults.set(newValue, forKey: "cached_network_balances") }
     }
 
+    /// Last authoritative served-inference count from the tracker, cached so the
+    /// inference total survives restart (like the balance).
+    var cachedServedCount: Int {
+        get { defaults.integer(forKey: "cached_served_count") }
+        set { defaults.set(newValue, forKey: "cached_served_count") }
+    }
+
     // MARK: - Display
 
     var keepAwake: Bool {

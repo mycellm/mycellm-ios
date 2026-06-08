@@ -98,12 +98,17 @@ final class NodeService: @unchecked Sendable {
         // instead of resetting to the seed; reconcileTrackerCredits() refreshes
         // it from the source of truth once connected.
         stats.creditBalance = Preferences.shared.cachedCreditBalance
+        stats.totalInferences = Preferences.shared.cachedServedCount
         if let data = Preferences.shared.cachedNetworkBalancesData,
            let nets = try? JSONDecoder().decode([NetworkBalance].self, from: data) {
             stats.networkBalances = nets
         }
         modelManager.scanLocalModels()
         Task { await fleetHandler.setNodeService(self) }
+        // Reconcile against the tracker immediately on launch (not just on the
+        // periodic flush) so the displayed balance + served count refresh from
+        // the source of truth right away.
+        Task { await reconcileTrackerCredits() }
     }
 
     private func loadOrCreateIdentity() {
@@ -322,27 +327,39 @@ final class NodeService: @unchecked Sendable {
             let total_earned: Double
             let total_spent: Double
             let tracked: Bool
+            let served: Int?
         }
         var fetched: [NetworkBalance] = []
+        var servedCount = 0
+        var gotResponse = false
         for net in ["public", ""] {
             guard let url = URL(string: "\(NetworkConfig.apiBase)/v1/public/credits/\(peerId)?network_id=\(net)"),
                   let (data, resp) = try? await URLSession.shared.data(from: url),
                   (resp as? HTTPURLResponse)?.statusCode == 200,
-                  let d = try? JSONDecoder().decode(TrackerBalance.self, from: data),
-                  d.tracked else { continue }
-            fetched.append(NetworkBalance(
-                networkId: net.isEmpty ? "default" : net,
-                balance: d.balance, earned: d.total_earned, spent: d.total_spent
-            ))
+                  let d = try? JSONDecoder().decode(TrackerBalance.self, from: data) else { continue }
+            gotResponse = true
+            servedCount = max(servedCount, d.served ?? 0)  // served is global, not per-net
+            if d.tracked {
+                fetched.append(NetworkBalance(
+                    networkId: net.isEmpty ? "default" : net,
+                    balance: d.balance, earned: d.total_earned, spent: d.total_spent
+                ))
+            }
         }
-        guard !fetched.isEmpty else { return }
+        guard gotResponse else { return }  // offline / tracker unreachable — keep cache
         let aggregate = fetched.reduce(0.0) { $0 + $1.balance }
         let encoded = try? JSONEncoder().encode(fetched)
         await MainActor.run {
-            stats.networkBalances = fetched
-            stats.creditBalance = aggregate
-            Preferences.shared.cachedCreditBalance = aggregate
-            Preferences.shared.cachedNetworkBalancesData = encoded
+            // Authoritative served count (survives restart). max() so an in-flight
+            // local increment isn't briefly undone by a slightly stale server count.
+            stats.totalInferences = max(stats.totalInferences, servedCount)
+            Preferences.shared.cachedServedCount = servedCount
+            if !fetched.isEmpty {
+                stats.networkBalances = fetched
+                stats.creditBalance = aggregate
+                Preferences.shared.cachedCreditBalance = aggregate
+                Preferences.shared.cachedNetworkBalancesData = encoded
+            }
         }
     }
 
