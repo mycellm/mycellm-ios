@@ -122,7 +122,8 @@ enum MessageBuilders {
         tokens: Int,
         cost: Double,
         timestamp: Double,
-        signature: String
+        signature: String,
+        requestId: String
     ) -> MessageEnvelope {
         MessageEnvelope(
             type: .creditReceipt,
@@ -134,6 +135,10 @@ enum MessageBuilders {
                 "cost": .double(cost),
                 "timestamp": .double(timestamp),
                 "signature": .string(signature),
+                // request_id must be present: the tracker rebuilds the canonical
+                // receipt bytes with it to verify the signature, and uses it for
+                // replay protection. Omitting it breaks both.
+                "request_id": .string(requestId),
             ],
             fromPeer: peer
         )

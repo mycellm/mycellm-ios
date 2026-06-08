@@ -73,6 +73,13 @@ actor BootstrapClient {
         onInferenceRequest = handler
     }
 
+    /// Send a message to the bootstrap over the existing connection — used to
+    /// deliver a signed credit receipt after serving, so the consumer co-signs
+    /// and settles it into the network tracker. Best-effort.
+    func send(_ envelope: MessageEnvelope) async {
+        try? await quicTransport?.send(envelope)
+    }
+
     // MARK: - Connect
 
     func connect(peerId: String, capabilities: Capabilities, deviceKey: DeviceKey?, deviceCert: DeviceCert?) async {

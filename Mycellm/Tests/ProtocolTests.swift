@@ -266,7 +266,8 @@ final class ProtocolTests: XCTestCase {
             tokens: 100,
             cost: 0.5,
             timestamp: 1700000000.0,
-            signature: "abc123"
+            signature: "abc123",
+            requestId: "req-1"
         )
 
         XCTAssertEqual(receipt.type, .creditReceipt)

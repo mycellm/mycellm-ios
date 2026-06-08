@@ -258,14 +258,29 @@ final class NodeService: @unchecked Sendable {
             stats.addEvent(.inferenceCompleted(model: model, tokens: totalTokens))
 
             let cost = Double(totalTokens) * 0.001
-            if let dk = deviceKey {
-                let _ = try? await creditLedger.earn(
+            if let dk = deviceKey,
+               let receipt = try? await creditLedger.earn(
                     amount: cost, from: envelope.fromPeer,
                     seederId: peerId, model: model,
                     tokens: totalTokens, requestId: envelope.id,
                     deviceKey: dk
-                )
+               ) {
                 stats.creditBalance = await creditLedger.balance
+                // Send the signed receipt to the consumer so it co-signs and
+                // settles our earnings into the network tracker (the source of
+                // truth). Without this our earnings never leave the device.
+                let receiptMsg = MessageBuilders.signedCreditReceipt(
+                    from: peerId,
+                    consumerId: receipt.consumerId,
+                    seederId: receipt.seederId,
+                    model: receipt.model,
+                    tokens: receipt.tokens,
+                    cost: receipt.cost,
+                    timestamp: receipt.timestamp,
+                    signature: receipt.signature,
+                    requestId: receipt.requestId
+                )
+                await bootstrapClient.send(receiptMsg)
             }
 
             return MessageBuilders.inferenceResponse(
