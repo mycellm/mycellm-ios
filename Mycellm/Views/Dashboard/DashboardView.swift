@@ -110,16 +110,22 @@ struct DashboardView: View {
 
             Spacer()
 
-            if node.networkMode != .standalone && node.isRunning {
-                bootstrapBadge
-            }
+            // Stack the bootstrap + network-mode badges vertically so they
+            // don't get squeezed side-by-side and wrap on the narrow iPhone
+            // header (they sat as siblings in the HStack before).
+            VStack(alignment: .trailing, spacing: 4) {
+                if node.networkMode != .standalone && node.isRunning {
+                    bootstrapBadge
+                }
 
-            Text(node.networkMode.displayName)
-                .font(.mono(11, weight: .medium))
-                .foregroundStyle(Color.relayBlue)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .background(Color.relayBlue.opacity(0.15), in: Capsule())
+                Text(node.networkMode.displayName)
+                    .font(.mono(11, weight: .medium))
+                    .foregroundStyle(Color.relayBlue)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color.relayBlue.opacity(0.15), in: Capsule())
+            }
+            .fixedSize(horizontal: true, vertical: false)
         }
         .padding(.horizontal)
     }
