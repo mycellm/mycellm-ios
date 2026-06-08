@@ -139,6 +139,16 @@ final class Preferences: @unchecked Sendable {
         set { defaults.set(newValue, forKey: "default_ctx_len") }
     }
 
+    /// When true (default), a model you load in the app is shared on the public
+    /// network (scope "public") so this node seeds inference for the public
+    /// chat. When false it stays private to this device (scope "home"). The
+    /// app's whole premise is contributing compute, so this is opt-out rather
+    /// than opt-in — users can turn it off in Settings.
+    var shareModelsPublicly: Bool {
+        get { defaults.object(forKey: "share_models_publicly") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "share_models_publicly") }
+    }
+
     // MARK: - Display
 
     var keepAwake: Bool {

@@ -106,7 +106,7 @@ struct SettingsView: View {
     // MARK: - Network
 
     private var networkSection: some View {
-        Section("Network") {
+        Section(header: Text("Network"), footer: Text("When on (default), models you load are shared on the public network so this device seeds inference for the public chat. Turn off to keep loaded models private to this device.").font(.mono(10))) {
             LabeledContent("Bootstrap") {
                 Text(preferences.bootstrapHost)
                     .font(.mono(12))
@@ -117,6 +117,19 @@ struct SettingsView: View {
                     .font(.mono(12))
                     .foregroundStyle(Color.relayBlue)
             }
+            Toggle("Share Models on Public", isOn: Binding(
+                get: { preferences.shareModelsPublicly },
+                set: { on in
+                    preferences.shareModelsPublicly = on
+                    // Re-scope already-loaded models so the toggle takes effect
+                    // immediately (next capability announce propagates it).
+                    let scope = on ? "public" : "home"
+                    for m in node.modelManager.loadedModels {
+                        node.modelManager.setScope(scope, for: m)
+                    }
+                }
+            ))
+            .font(.mono(13))
         }
     }
 

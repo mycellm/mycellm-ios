@@ -381,7 +381,10 @@ struct ModelsView: View {
                         .clipShape(Capsule())
                     } else {
                         Button("Load") {
-                            Task { try? await modelManager.loadModel(file: file) }
+                            // Share on the public network by default (opt-out via Settings),
+                            // so loading a model makes this node seed public chat.
+                            let scope = Preferences.shared.shareModelsPublicly ? "public" : "home"
+                            Task { try? await modelManager.loadModel(file: file, scope: scope) }
                         }
                         .font(.mono(11, weight: .medium))
                         .foregroundStyle(Color.sporeGreen)
