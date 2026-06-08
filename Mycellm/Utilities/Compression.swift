@@ -44,24 +44,20 @@ enum ZlibCompression {
         let deflateData = data[data.startIndex + 2 ..< data.endIndex - 4]
         guard !deflateData.isEmpty else { return Data() }
 
-        // Start with 4x buffer, grow if needed
-        var destinationSize = deflateData.count * 4
-        var destinationBuffer = [UInt8](repeating: 0, count: destinationSize)
-
-        let decompressedSize = deflateData.withUnsafeBytes { sourcePtr -> Int in
-            guard let baseAddress = sourcePtr.baseAddress else { return 0 }
-            return compression_decode_buffer(
-                &destinationBuffer, destinationSize,
-                baseAddress.assumingMemoryBound(to: UInt8.self), deflateData.count,
-                nil, COMPRESSION_ZLIB
-            )
-        }
-
-        // If output filled the buffer, retry with larger buffer
-        if decompressedSize == destinationSize {
-            destinationSize *= 4
-            destinationBuffer = [UInt8](repeating: 0, count: destinationSize)
-            let retrySize = deflateData.withUnsafeBytes { sourcePtr -> Int in
+        // compression_decode_buffer is one-shot: if the destination is too
+        // small it fills it completely and returns exactly destinationSize.
+        // The decompressed size is unbounded relative to the compressed size
+        // (a long run of equal bytes compresses ~100:1), so we can't size the
+        // buffer from deflateData.count alone — grow and retry until the result
+        // no longer exactly fills the buffer (i.e. it wasn't truncated).
+        //
+        // (Previously this used a single 4x retry — only ~16x the compressed
+        // size — which silently truncated highly-compressible payloads.)
+        var destinationSize = max(deflateData.count * 4, 4096)
+        let cap = 64 * 1024 * 1024  // guard against corrupt input → runaway alloc
+        while true {
+            var destinationBuffer = [UInt8](repeating: 0, count: destinationSize)
+            let decompressedSize = deflateData.withUnsafeBytes { sourcePtr -> Int in
                 guard let baseAddress = sourcePtr.baseAddress else { return 0 }
                 return compression_decode_buffer(
                     &destinationBuffer, destinationSize,
@@ -69,12 +65,18 @@ enum ZlibCompression {
                     nil, COMPRESSION_ZLIB
                 )
             }
-            guard retrySize > 0 else { return nil }
-            return Data(destinationBuffer[..<retrySize])
-        }
+            guard decompressedSize > 0 else { return nil }
 
-        guard decompressedSize > 0 else { return nil }
-        return Data(destinationBuffer[..<decompressedSize])
+            // Result filled the buffer exactly → output may be truncated. Grow
+            // and retry. (Worst case one extra decode when the size matches the
+            // buffer exactly; the retry then returns the same, smaller value.)
+            if decompressedSize == destinationSize {
+                guard destinationSize < cap else { return nil }
+                destinationSize = min(destinationSize * 2, cap)
+                continue
+            }
+            return Data(destinationBuffer[..<decompressedSize])
+        }
     }
 
     /// Compute Adler-32 checksum (big-endian, 4 bytes).

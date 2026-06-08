@@ -75,6 +75,11 @@ targets:
         product: MLXLLM
       - package: mlx-swift-lm
         product: MLXLMCommon
+      # MLXVLM enables vision-language models (MLXBackend's #if canImport(MLXVLM)
+      # path). Without it, vision models fall back to the text path (images
+      # dropped). Same package as MLXLLM — no new SwiftPM source to resolve.
+      - package: mlx-swift-lm
+        product: MLXVLM
       - package: swift-transformers
         product: Transformers
 

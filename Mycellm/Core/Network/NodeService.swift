@@ -288,6 +288,17 @@ final class NodeService: @unchecked Sendable {
         return (result.text, result.promptTokens, result.completionTokens)
     }
 
+    // Multimodal (vision) variants — used when a message carries images. The
+    // engine feeds them to a VLM model, or flattens to text for text models.
+    func streamLocalInference(multimodal messages: [MultimodalMessage]) async -> AsyncThrowingStream<String, Error> {
+        return await modelManager.engine.stream(multimodal: messages)
+    }
+
+    func completeLocalInference(multimodal messages: [MultimodalMessage], temperature: Double = 0.7, maxTokens: Int = 2048) async throws -> (text: String, promptTokens: Int, completionTokens: Int) {
+        let result = try await modelManager.engine.complete(multimodal: messages, temperature: temperature, maxTokens: maxTokens)
+        return (result.text, result.promptTokens, result.completionTokens)
+    }
+
     var hasLoadedModel: Bool { !modelManager.loadedModels.isEmpty }
 
     func resetInferenceContext() async {

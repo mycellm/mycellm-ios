@@ -30,6 +30,16 @@ import MLXLLM
 import MLXLMCommon
 import Tokenizers
 
+// MLXVLM is an optional product of the same mlx-swift-lm package. When it's
+// linked (project.yml dependency), MLXBackend loads vision models via
+// VLMModelFactory and feeds images to the processor; when it isn't, vision
+// models fall back to the text path (images dropped). CoreImage decodes the
+// image bytes to CIImage for UserInput.
+#if canImport(MLXVLM)
+import MLXVLM
+import CoreImage
+#endif
+
 /// Adapt swift-transformers' Tokenizers.Tokenizer to MLXLMCommon.Tokenizer.
 /// The two protocols are near-identical (same model of encode/decode/
 /// convert/special-tokens) but live in different modules. MLXLMCommon's
@@ -121,6 +131,9 @@ actor MLXBackend: InferenceBackend {
     private(set) var tokensPerSecond: Double = 0.0
 
     private var container: ModelContainer?
+    /// True when the loaded model is a vision-language model loaded via
+    /// VLMModelFactory — gates the image-aware generate path.
+    private var isVLM = false
 
     /// Cross-turn KV cache (see ``KVCacheStore``). Reset on model load/unload
     /// and on explicit ``resetContext()``; falls back to a full prefill
@@ -131,6 +144,7 @@ actor MLXBackend: InferenceBackend {
     func loadModel(path: String, name: String, ctxLen: Int) async throws {
         // Clean up previous model
         container = nil
+        isVLM = false
         kvStore.reset()
 
         let modelURL = URL(filePath: path)
@@ -150,10 +164,30 @@ actor MLXBackend: InferenceBackend {
         // mlx-swift-lm's loadContainer(from:URL, using:TokenizerLoader)
         // overload skips the hub/downloader path entirely and reads
         // weights + config directly from disk.
-        container = try await LLMModelFactory.shared.loadContainer(
-            from: modelURL,
-            using: LocalTokenizerLoader()
-        )
+        //
+        // Vision-language models load via VLMModelFactory (which also builds an
+        // image processor) instead of LLMModelFactory. ModelFormat.detect still
+        // returns .mlx for these, so InferenceEngine routes them here.
+        if ModelFormat.isVisionModel(path: path) {
+            #if canImport(MLXVLM)
+            container = try await VLMModelFactory.shared.loadContainer(
+                from: modelURL,
+                using: LocalTokenizerLoader()
+            )
+            isVLM = true
+            #else
+            throw MycellmError.inferenceError(
+                "\(name) is a vision model, which needs the MLXVLM product. "
+                + "Add it to the app's mlx-swift-lm dependency."
+            )
+            #endif
+        } else {
+            container = try await LLMModelFactory.shared.loadContainer(
+                from: modelURL,
+                using: LocalTokenizerLoader()
+            )
+            isVLM = false
+        }
         loadedModel = name
         // ctxLen is honored by the model's KV cache at inference time;
         // MLX doesn't expose a load-time context budget like llama.cpp's
@@ -163,6 +197,7 @@ actor MLXBackend: InferenceBackend {
 
     func unloadModel() {
         container = nil
+        isVLM = false
         kvStore.reset()
         loadedModel = nil
         tokensPerSecond = 0
@@ -310,6 +345,196 @@ actor MLXBackend: InferenceBackend {
         }
     }
 
+    // MARK: - Multimodal (vision) inference
+
+    /// Image-aware completion. Falls back to the text path unless a VLM model
+    /// is loaded AND the request actually carries images — so text models and
+    /// image-less turns behave exactly as before.
+    func complete(
+        multimodal messages: [MultimodalMessage],
+        temperature: Double,
+        maxTokens: Int,
+        tools: [OpenAIRoutes.Tool]
+    ) async throws -> InferenceResult {
+        guard isVLM, messages.hasImages else {
+            return try await complete(
+                messages: messages.asTextMessages,
+                temperature: temperature, maxTokens: maxTokens, tools: tools
+            )
+        }
+        #if canImport(MLXVLM)
+        return try await completeVLM(
+            messages: messages, temperature: temperature, maxTokens: maxTokens, tools: tools
+        )
+        #else
+        return try await complete(
+            messages: messages.asTextMessages,
+            temperature: temperature, maxTokens: maxTokens, tools: tools
+        )
+        #endif
+    }
+
+    func stream(
+        multimodal messages: [MultimodalMessage],
+        temperature: Double,
+        maxTokens: Int,
+        tools: [OpenAIRoutes.Tool]
+    ) -> AsyncThrowingStream<String, Error> {
+        guard isVLM, messages.hasImages else {
+            return stream(
+                messages: messages.asTextMessages,
+                temperature: temperature, maxTokens: maxTokens, tools: tools
+            )
+        }
+        #if canImport(MLXVLM)
+        return streamVLM(
+            messages: messages, temperature: temperature, maxTokens: maxTokens, tools: tools
+        )
+        #else
+        return stream(
+            messages: messages.asTextMessages,
+            temperature: temperature, maxTokens: maxTokens, tools: tools
+        )
+        #endif
+    }
+
+    #if canImport(MLXVLM)
+    /// Inject tool definitions into the system turn (multimodal overload of the
+    /// text helper). Returns Sendable [MultimodalMessage] so it can be computed
+    /// on the actor and captured by the `container.perform` @Sendable closure.
+    private func injectToolsIntoSystem(
+        _ messages: [MultimodalMessage], tools: [OpenAIRoutes.Tool]
+    ) -> [MultimodalMessage] {
+        guard !tools.isEmpty else { return messages }
+        let addendum = ToolCallParser.formatToolsForSystemPrompt(tools)
+        guard !addendum.isEmpty else { return messages }
+        var result = messages
+        if let i = result.firstIndex(where: { $0.role == "system" }) {
+            let existing = result[i].text
+            result[i] = MultimodalMessage(
+                role: "system",
+                text: existing.isEmpty ? addendum : existing + "\n\n" + addendum,
+                images: result[i].images
+            )
+        } else {
+            result.insert(MultimodalMessage(role: "system", text: addendum), at: 0)
+        }
+        return result
+    }
+
+    /// Build the processor `Chat` from multimodal messages — rendered with the
+    /// model's own chat template (so image placeholders land correctly, unlike
+    /// the manual ChatML used for text) and decoded CIImages. `static` so it
+    /// runs inside the @Sendable closure without an actor hop and the
+    /// non-Sendable Chat/CIImage values never cross an isolation boundary.
+    private static func buildVLMChat(_ messages: [MultimodalMessage]) -> [Chat.Message] {
+        messages.map { m in
+            switch m.role {
+            case "system":
+                return .system(m.text)
+            case "assistant":
+                return .assistant(m.text)
+            default:
+                let imgs: [UserInput.Image] = m.images.compactMap { data in
+                    CIImage(data: data).map { UserInput.Image.ciImage($0) }
+                }
+                return .user(m.text, images: imgs)
+            }
+        }
+    }
+
+    private func completeVLM(
+        messages: [MultimodalMessage],
+        temperature: Double,
+        maxTokens: Int,
+        tools: [OpenAIRoutes.Tool]
+    ) async throws -> InferenceResult {
+        guard let container else {
+            throw MycellmError.modelNotLoaded("No MLX model loaded")
+        }
+        // Inject tools on the actor (Sendable result), then build the
+        // non-Sendable UserInput inside the closure.
+        let augmented = injectToolsIntoSystem(messages, tools: tools)
+        let parameters = GenerateParameters(maxTokens: maxTokens, temperature: Float(temperature))
+        let startTime = Date()
+
+        let (rawText, promptTokens, completionTokens) = try await container.perform { context in
+            let userInput = UserInput(chat: Self.buildVLMChat(augmented))
+            let lmInput = try await context.processor.prepare(input: userInput)
+            let promptCount = lmInput.text.tokens.size
+            var text = ""
+            var completed = 0
+            let stream = try MLXLMCommon.generate(
+                input: lmInput, parameters: parameters, context: context
+            )
+            for await batch in stream {
+                if let chunk = batch.chunk {
+                    text += chunk
+                    completed += 1
+                }
+            }
+            return (text, promptCount, completed)
+        }
+
+        let elapsed = Date().timeIntervalSince(startTime)
+        tokensPerSecond = elapsed > 0 ? Double(completionTokens) / elapsed : 0
+
+        if tools.isEmpty {
+            return InferenceResult(text: rawText, promptTokens: promptTokens, completionTokens: completionTokens)
+        }
+        let parsed = ToolCallParser.extract(from: rawText)
+        return InferenceResult(
+            text: parsed.residualContent,
+            promptTokens: promptTokens,
+            completionTokens: completionTokens,
+            toolCalls: parsed.toolCalls
+        )
+    }
+
+    private func streamVLM(
+        messages: [MultimodalMessage],
+        temperature: Double,
+        maxTokens: Int,
+        tools: [OpenAIRoutes.Tool]
+    ) -> AsyncThrowingStream<String, Error> {
+        AsyncThrowingStream { continuation in
+            Task {
+                do {
+                    guard let container = self.container else {
+                        throw MycellmError.modelNotLoaded("No MLX model loaded")
+                    }
+                    let augmented = await self.injectToolsIntoSystem(messages, tools: tools)
+                    let parameters = GenerateParameters(maxTokens: maxTokens, temperature: Float(temperature))
+                    let startTime = Date()
+
+                    let count: Int = try await container.perform { context in
+                        let userInput = UserInput(chat: Self.buildVLMChat(augmented))
+                        let lmInput = try await context.processor.prepare(input: userInput)
+                        let stream = try MLXLMCommon.generate(
+                            input: lmInput, parameters: parameters, context: context
+                        )
+                        var emitted = 0
+                        for await batch in stream {
+                            if Task.isCancelled { break }
+                            if let chunk = batch.chunk {
+                                continuation.yield(chunk)
+                                emitted += 1
+                            }
+                        }
+                        return emitted
+                    }
+
+                    let elapsed = Date().timeIntervalSince(startTime)
+                    await self.updateTPS(count: count, elapsed: elapsed)
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+        }
+    }
+    #endif
+
     func resetContext() throws {
         // Drop the cross-turn KV cache so the next request prefills cold.
         // Callers invoke this when starting a fresh conversation.
@@ -318,6 +543,7 @@ actor MLXBackend: InferenceBackend {
 
     func cleanup() {
         container = nil
+        isVLM = false
         kvStore.reset()
         loadedModel = nil
     }

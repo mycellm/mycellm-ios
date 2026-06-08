@@ -18,11 +18,12 @@ enum NetworkConfig {
     /// Default HTTP API port for local server.
     static let httpPort: Int = 8420
 
-    /// Privacy policy URL.
-    static let privacyURL = "https://mycellm.ai/privacy/"
+    /// Privacy policy URL — served from the marketing site (Astro build
+    /// produces /privacy/index.html). The api. subdomain is REST only.
+    static let privacyURL = "https://mycellm.ai/privacy"
 
-    /// Terms of service URL.
-    static let termsURL = "https://mycellm.ai/terms/"
+    /// Terms of service URL — same hosting as privacyURL.
+    static let termsURL = "https://mycellm.ai/terms"
 
     /// Keychain service prefix.
     static let keychainPrefix = "com.mycellm"
@@ -32,5 +33,5 @@ enum NetworkConfig {
     /// NodeService (peer hello), and Capabilities all read this. Bump when
     /// upstream Python mycellm cuts a release that changes the wire
     /// protocol or the OpenAI-API surface that iOS mirrors.
-    static let version = "0.3.0"
+    static let version = "0.4.0"
 }

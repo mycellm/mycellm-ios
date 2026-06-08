@@ -143,6 +143,72 @@ actor InferenceEngine {
         }
     }
 
+    // MARK: - Multimodal inference (vision)
+
+    /// Non-streaming completion with image-capable messages. Delegates to the
+    /// backend's multimodal path — the MLX backend feeds images to a VLM model;
+    /// text backends flatten to text (default protocol impl). Mirrors
+    /// ``complete(messages:temperature:maxTokens:tools:)``.
+    func complete(
+        multimodal messages: [MultimodalMessage],
+        temperature: Double = 0.7,
+        maxTokens: Int = 2048,
+        tools: [OpenAIRoutes.Tool] = []
+    ) async throws -> InferenceResult {
+        guard let backend else {
+            throw MycellmError.modelNotLoaded("No model loaded")
+        }
+        state = .inferring(currentModel ?? "")
+        defer { state = .ready(currentModel ?? "") }
+
+        let result = try await backend.complete(
+            multimodal: messages,
+            temperature: temperature,
+            maxTokens: maxTokens,
+            tools: tools
+        )
+        tokensPerSecond = await backend.tokensPerSecond
+        return result
+    }
+
+    func stream(
+        multimodal messages: [MultimodalMessage],
+        temperature: Double = 0.7,
+        maxTokens: Int = 2048,
+        tools: [OpenAIRoutes.Tool] = []
+    ) -> AsyncThrowingStream<String, Error> {
+        guard let backend else {
+            return AsyncThrowingStream { $0.finish(throwing: MycellmError.modelNotLoaded("No model loaded")) }
+        }
+        state = .inferring(currentModel ?? "")
+
+        let capturedBackend = backend
+        return AsyncThrowingStream { continuation in
+            Task { [weak self] in
+                do {
+                    let inner = await capturedBackend.stream(
+                        multimodal: messages,
+                        temperature: temperature,
+                        maxTokens: maxTokens,
+                        tools: tools
+                    )
+                    for try await chunk in inner {
+                        continuation.yield(chunk)
+                    }
+                    if let self {
+                        await self.updateAfterStream()
+                    }
+                    continuation.finish()
+                } catch {
+                    if let self {
+                        await self.updateAfterStream()
+                    }
+                    continuation.finish(throwing: error)
+                }
+            }
+        }
+    }
+
     private func updateAfterStream() async {
         if let backend {
             tokensPerSecond = await backend.tokensPerSecond
