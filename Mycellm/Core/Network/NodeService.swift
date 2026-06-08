@@ -6,7 +6,12 @@ import Observation
 @Observable
 final class NodeStats: @unchecked Sendable {
     var totalInferences: Int = 0
+    /// Authoritative aggregate balance across networks, reconciled from the
+    /// tracker (source of truth) and cached locally — not the resetting
+    /// in-memory ledger.
     var creditBalance: Double = 0.0
+    /// Per-network authoritative balances from the tracker.
+    var networkBalances: [NetworkBalance] = []
     private(set) var recentEvents: [ActivityItem] = []
 
     func addEvent(_ kind: ActivityItem.Kind) {
@@ -16,6 +21,16 @@ final class NodeStats: @unchecked Sendable {
             recentEvents.removeLast()
         }
     }
+}
+
+/// A node's authoritative credit balance on one network, as held by that
+/// network's tracker (the public prime for the public net).
+struct NetworkBalance: Identifiable, Codable, Sendable {
+    var networkId: String
+    var balance: Double
+    var earned: Double
+    var spent: Double
+    var id: String { networkId }
 }
 
 // MARK: - Connection (changes on connect/disconnect — Dashboard/Peers observe)
@@ -79,7 +94,14 @@ final class NodeService: @unchecked Sendable {
     init() {
         loadOrCreateIdentity()
         networkMode = Preferences.shared.networkMode
-        stats.creditBalance = 100.0
+        // Load the last tracker-reconciled balance so it survives restart
+        // instead of resetting to the seed; reconcileTrackerCredits() refreshes
+        // it from the source of truth once connected.
+        stats.creditBalance = Preferences.shared.cachedCreditBalance
+        if let data = Preferences.shared.cachedNetworkBalancesData,
+           let nets = try? JSONDecoder().decode([NetworkBalance].self, from: data) {
+            stats.networkBalances = nets
+        }
         modelManager.scanLocalModels()
         Task { await fleetHandler.setNodeService(self) }
     }
@@ -267,9 +289,46 @@ final class NodeService: @unchecked Sendable {
         stats.addEvent(.creditEarned(cost, clientIP))
     }
 
-    /// Periodically submit receipts to bootstrap for auditing.
+    /// Periodically submit receipts to bootstrap for auditing, then reconcile
+    /// our displayed balance against the tracker (source of truth).
     func flushReceipts() async {
         await creditLedger.submitPendingReceipts()
+        await reconcileTrackerCredits()
+    }
+
+    /// Reconcile the displayed credit balance against the tracker: fetch this
+    /// node's authoritative per-network balances and cache them so they persist
+    /// across restart instead of resetting to the local seed. The tracker is
+    /// the source of truth; the in-memory ledger is only a transient cache.
+    func reconcileTrackerCredits() async {
+        guard !peerId.isEmpty else { return }
+        struct TrackerBalance: Decodable {
+            let balance: Double
+            let total_earned: Double
+            let total_spent: Double
+            let tracked: Bool
+        }
+        var fetched: [NetworkBalance] = []
+        for net in ["public", ""] {
+            guard let url = URL(string: "\(NetworkConfig.apiBase)/v1/public/credits/\(peerId)?network_id=\(net)"),
+                  let (data, resp) = try? await URLSession.shared.data(from: url),
+                  (resp as? HTTPURLResponse)?.statusCode == 200,
+                  let d = try? JSONDecoder().decode(TrackerBalance.self, from: data),
+                  d.tracked else { continue }
+            fetched.append(NetworkBalance(
+                networkId: net.isEmpty ? "default" : net,
+                balance: d.balance, earned: d.total_earned, spent: d.total_spent
+            ))
+        }
+        guard !fetched.isEmpty else { return }
+        let aggregate = fetched.reduce(0.0) { $0 + $1.balance }
+        let encoded = try? JSONEncoder().encode(fetched)
+        await MainActor.run {
+            stats.networkBalances = fetched
+            stats.creditBalance = aggregate
+            Preferences.shared.cachedCreditBalance = aggregate
+            Preferences.shared.cachedNetworkBalancesData = encoded
+        }
     }
 
     func setNetworkMode(_ mode: NetworkMode) {

@@ -149,6 +149,22 @@ final class Preferences: @unchecked Sendable {
         set { defaults.set(newValue, forKey: "share_models_publicly") }
     }
 
+    // MARK: - Credits (cached from the tracker / source of truth)
+
+    /// Last authoritative aggregate balance reconciled from the tracker, cached
+    /// so it survives app restart and shows offline (instead of resetting to
+    /// the in-memory seed).
+    var cachedCreditBalance: Double {
+        get { defaults.object(forKey: "cached_credit_balance") as? Double ?? 100.0 }
+        set { defaults.set(newValue, forKey: "cached_credit_balance") }
+    }
+
+    /// Cached per-network authoritative balances (JSON-encoded [NetworkBalance]).
+    var cachedNetworkBalancesData: Data? {
+        get { defaults.data(forKey: "cached_network_balances") }
+        set { defaults.set(newValue, forKey: "cached_network_balances") }
+    }
+
     // MARK: - Display
 
     var keepAwake: Bool {
