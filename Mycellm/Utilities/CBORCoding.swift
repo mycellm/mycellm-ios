@@ -42,14 +42,22 @@ func buildReceiptData(
     timestamp: Double = 0.0
 ) -> Data {
     let ts = timestamp > 0 ? timestamp : Date().timeIntervalSince1970
-    let map: CBOR = .map([
-        .utf8String("consumer"): .utf8String(consumerId),
-        .utf8String("seeder"): .utf8String(seederId),
-        .utf8String("model"): .utf8String(model),
-        .utf8String("tokens"): .unsignedInt(UInt64(tokens)),
-        .utf8String("cost"): .double(cost),
-        .utf8String("request_id"): .utf8String(requestId),
-        .utf8String("ts"): .double(ts),
-    ])
-    return Data(map.encode())
+    // Encode the map manually in INSERTION ORDER to byte-match Python's
+    // cbor2.dumps (which preserves dict insertion order). SwiftCBOR's
+    // `.map([CBOR: CBOR])` is backed by an unordered Swift Dictionary, so its
+    // key order varies per process and the signature never verifies against
+    // the Python tracker — every receipt was rejected as "Invalid signature".
+    var bytes: [UInt8] = [0xA7] // CBOR map header, 7 pairs
+    func put(_ key: String, _ value: CBOR) {
+        bytes.append(contentsOf: CBOR.utf8String(key).encode())
+        bytes.append(contentsOf: value.encode())
+    }
+    put("consumer", .utf8String(consumerId))
+    put("seeder", .utf8String(seederId))
+    put("model", .utf8String(model))
+    put("tokens", .unsignedInt(UInt64(tokens)))
+    put("cost", .double(cost))
+    put("request_id", .utf8String(requestId))
+    put("ts", .double(ts))
+    return Data(bytes)
 }
