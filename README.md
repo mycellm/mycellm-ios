@@ -32,11 +32,12 @@
 
 The mycellm iOS app turns your iPad into a full peer on the [mycellm](https://github.com/mycellm/mycellm) distributed inference network — serve inference to the network, earn credits, and chat with privacy protection. An iPad Pro with an M-series chip runs 3B+ models at 30+ tokens/sec on Metal. Also works on iPhone.
 
-- **On-device inference** — llama.cpp on Metal, streaming tokens with thermal throttling
+- **On-device inference** — llama.cpp and MLX (mlx-swift-lm) on Metal, streaming tokens with thermal throttling
+- **Multimodal (vision)** — load a vision-language model (Qwen2.5-VL) to serve and chat with images; attach a photo in the chat composer
 - **Network + local routing** — toggle per message, automatic fallback if network fails
 - **Sensitive Data Guard** — prompts are scanned on-device for PII; sensitive queries route to your local model automatically
 - **Chat persistence** — threaded conversations with metadata (model, node, tokens/sec, route). Export, share, and private ephemeral sessions.
-- **Credit economy** — earn credits by seeding, spend them consuming. Signed receipts, no blockchain.
+- **Credit economy** — earn credits by seeding, spend them consuming. Consumer co-signed receipts settle to the network's tracker (the source of truth, reconciled on-device); no blockchain.
 - **OpenAI-compatible API** — your device serves `/v1/chat/completions` on your LAN for other tools
 
 <p align="center">
@@ -60,7 +61,7 @@ xcodegen generate
 open Mycellm.xcodeproj
 ```
 
-Select your device or simulator and build (⌘B). SPM dependencies (SwiftCBOR, Hummingbird, llama.swift) resolve automatically.
+Select your device or simulator and build (⌘B). SPM dependencies (SwiftCBOR, Hummingbird, llama.swift, mlx-swift-lm, swift-transformers) resolve automatically.
 
 ### Configuration
 
@@ -85,8 +86,8 @@ Mycellm/
 │   ├── Protocol/      CBOR message envelopes, 20 message types
 │   ├── Network/       NodeService facade, bootstrap client, fleet handler
 │   ├── API/           Hummingbird HTTP server, OpenAI-compatible routes
-│   ├── Inference/     llama.swift engine, model lifecycle, thermal throttle
-│   ├── Accounting/    Credit ledger, signed receipts
+│   ├── Inference/     llama.cpp + MLX (mlx-swift-lm / MLXVLM) engines, model lifecycle, thermal throttle
+│   ├── Accounting/    Credit ledger, co-signed receipts, tracker reconcile
 │   ├── NAT/           STUN discovery, UDP hole punching
 │   ├── Privacy/       Sensitive data guard (PII/credential scanning)
 │   └── Storage/       SwiftData models, UserDefaults preferences
@@ -132,7 +133,7 @@ This project was developed in collaboration with [Claude Code](https://claude.ai
 Built by [Michael Gifford-Santos](https://github.com/mijkal).
 
 - **AI pair programming**: [Claude Code](https://claude.ai/code) by Anthropic
-- **Inference**: [llama.swift](https://github.com/mattt/llama.swift) by Mattt
+- **Inference**: [llama.swift](https://github.com/mattt/llama.swift) by Mattt · [mlx-swift-lm](https://github.com/ml-explore/mlx-swift-lm) by Apple
 - **HTTP server**: [Hummingbird](https://github.com/hummingbird-project/hummingbird)
 - **Serialization**: [SwiftCBOR](https://github.com/valpackett/SwiftCBOR)
 - **Typography**: [JetBrains Mono](https://github.com/JetBrains/JetBrainsMono)
