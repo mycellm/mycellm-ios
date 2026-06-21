@@ -18,12 +18,13 @@ enum NetworkConfig {
     /// Default HTTP API port for local server.
     static let httpPort: Int = 8420
 
-    /// Privacy policy URL — served from the marketing site (Astro build
-    /// produces /privacy/index.html). The api. subdomain is REST only.
-    static let privacyURL = "https://mycellm.ai/privacy"
+    /// Privacy policy URL — served from the canonical marketing site
+    /// (Astro `site: https://mycellm.dev`; build produces /privacy/index.html).
+    /// The api. subdomain is REST only. Verified live (200).
+    static let privacyURL = "https://mycellm.dev/privacy"
 
-    /// Terms of service URL — same hosting as privacyURL.
-    static let termsURL = "https://mycellm.ai/terms"
+    /// Terms of service URL — same hosting as privacyURL. Verified live (200).
+    static let termsURL = "https://mycellm.dev/terms"
 
     /// Keychain service prefix.
     static let keychainPrefix = "com.mycellm"

@@ -74,10 +74,11 @@ First public release.
 Thanks for trying mycellm. Tell us what to build next.
 ```
 
-## Promotional / support URLs
-- Marketing URL: https://mycellm.ai  ⚠️ confirm canonical domain (code references mycellm.ai; infra/gateway is mycellm.dev — see review-checklist)
-- Support URL: https://mycellm.ai/support (must resolve before submission)
-- Privacy Policy URL: https://mycellm.ai/privacy (REQUIRED; must resolve)
+## Promotional / support URLs (canonical = mycellm.dev, verified live)
+- Marketing URL: https://mycellm.dev  (200)
+- Support URL: https://mycellm.dev  (200 — no dedicated /support page yet; add /support or /contact before submission for a cleaner reviewer experience)
+- Privacy Policy URL: https://mycellm.dev/privacy  (200, REQUIRED)
+- Terms of Service URL: https://mycellm.dev/terms  (200)
 
 ## Category
 - Primary: **Developer Tools** (or **Productivity**)

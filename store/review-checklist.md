@@ -6,11 +6,11 @@ Status legend: ✅ done · ⚠️ action needed · ⬜ to verify on the Mac/App 
 - ✅ `MARKETING_VERSION` 1.0.0, `CURRENT_PROJECT_VERSION` 1 (project.yml)
 - ✅ Bundle ID `com.mycellm.app`, Team `DCMLXQ5H7M`
 - ✅ `ITSAppUsesNonExemptEncryption = false` (Info.plist) — no export-compliance docs needed
-- ⚠️ **Increased Memory Limit entitlement** (`com.apple.developer.kernel.increased-memory-limit`) is declared. The App ID's provisioning profile MUST include this capability or the App Store build is invalid / >3 GB model loads crash. Verify in Developer Portal → Identifiers → com.mycellm.app → Additional Capabilities, then regenerate the distribution profile.
+- ✅ **Increased Memory Limit entitlement** (`com.apple.developer.kernel.increased-memory-limit`) declared in `Mycellm.entitlements`, wired via `CODE_SIGN_ENTITLEMENTS`. With `CODE_SIGN_STYLE: Automatic` + team `DCMLXQ5H7M`, Xcode registers the App ID capability automatically at archive. ⬜ Just confirm in the Organizer that the distribution profile shows the capability before upload. (Consider also `com.apple.developer.kernel.extended-virtual-addressing` if 7B+ models need >4 GB single allocations.)
 - ⬜ Archive a **Release** build (`xcodebuild -scheme Mycellm -configuration Release archive`) and validate in Organizer before upload. (Screenshot mode is `#if DEBUG`, absent from Release — correct.)
 
 ## Privacy (App Privacy "nutrition label")
-- ⚠️ **Privacy Policy URL is required** and must resolve. Code points at `https://mycellm.ai/privacy` and `https://mycellm.ai/terms` (NetworkConfig.swift) — confirm the pages are live and that `mycellm.ai` (not `mycellm.dev`) is canonical, or update NetworkConfig + listing to match.
+- ✅ **Canonical URLs fixed to mycellm.dev and verified live (200):** privacy `https://mycellm.dev/privacy`, terms `https://mycellm.dev/terms`. `NetworkConfig.swift` + listing + storeboard project updated off the old `mycellm.ai`. (⬜ Add a dedicated `/support` or `/contact` page — currently using the homepage as Support URL.)
 - ⬜ Nutrition label: recommend **Data Not Collected** — the app has no analytics/crash SDKs and stores identity/keys on-device. BUT in **Network mode** prompts are relayed to peers / the public prime (`api.mycellm.dev`, which you operate). Decide & declare honestly:
   - If the prime does NOT persist prompt content → "Data Not Collected" is defensible; the privacy policy must still describe the P2P data flow.
   - If it logs prompts/metadata → declare under "User Content / Diagnostics" accordingly.
