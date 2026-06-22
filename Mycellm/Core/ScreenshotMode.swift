@@ -39,7 +39,11 @@ enum ScreenshotMode {
             return
         }
 
-        let session = ChatSession(title: demoTitle, model: "Qwen2.5-3B-Instruct")
+        // Trusted-device story: the phone runs a big model by routing to a
+        // device the user trusts (their Mac Studio) on their private network.
+        let bigModel = "Qwen2.5-32B-Instruct"
+        let trustedNode = "studio-m5max"
+        let session = ChatSession(title: demoTitle, model: bigModel)
         ctx.insert(session)
 
         let now = Date()
@@ -47,25 +51,25 @@ enum ScreenshotMode {
             let m = ChatMessage(
                 role: role,
                 content: content,
-                model: role == "assistant" ? "Qwen2.5-3B-Instruct" : "",
-                routedVia: "local"
+                model: role == "assistant" ? bigModel : "",
+                routedVia: role == "assistant" ? "network" : "local"
             )
             m.timestamp = now.addingTimeInterval(offset)
             m.tokensPerSecond = tps
             m.tokenCount = tokens
-            m.sourceNode = role == "assistant" ? "this device" : ""
+            m.sourceNode = role == "assistant" ? trustedNode : ""
             m.session = session
             ctx.insert(m)
         }
 
-        add("user", "What can you run entirely on-device?", offset: -240)
+        add("user", "Can my iPhone run a 32B model?", offset: -240)
         add("assistant",
-            "Right now I'm replying from Qwen2.5-3B running locally on this iPhone — no cloud, no account, fully private. For heavier models, mycellm can route to a peer on your network and split the work.",
-            tps: 41.2, tokens: 48, offset: -236)
-        add("user", "Does it cost anything?", offset: -120)
+            "On its own, no — but this reply is served by your Mac Studio (M5 Max) on your private network. Your phone stays light; a device you trust does the heavy lifting. No cloud involved.",
+            tps: 78.4, tokens: 56, offset: -236)
+        add("user", "And when I'm away from home?", offset: -120)
         add("assistant",
-            "No. You earn credits by sharing spare compute with the network, and spend them when you borrow it. It's all peer-to-peer.",
-            tps: 39.7, tokens: 34, offset: -116)
+            "Switch to On-Device for a smaller local model, or tap the public network. Same chat — you choose where it runs.",
+            tps: 75.9, tokens: 30, offset: -116)
 
         session.updatedAt = now
         try? ctx.save()

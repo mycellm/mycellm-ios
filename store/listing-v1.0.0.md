@@ -1,89 +1,64 @@
 # mycellm — App Store listing (v1.0.0)
 
-Field character limits (Apple): name 30 · subtitle 30 · promo 170 · keywords 100 · description 4000 · what's-new 4000.
-All copy below is within limits (counts noted). Drop straight into Storeboard / App Store Connect.
+Positioning: **mycellm is first a node for distributed AI inference.** Run that node on your own
+device (local/on-device), route to a **trusted device** on your own network (your phone using your
+Mac Studio / iPad Pro), or tap the **free public net** — and federate networks. Hacker/self-hoster
+voice; first-class on ANY device that serves a model. Use cases: https://mycellm.dev
 
----
+Applied live to App Store Connect (app id 6761091607, 1.0.0). Limits: name 30 · subtitle 30 · promo 170 · keywords 100 · description 4000.
 
 ## App name (≤30)
-**mycellm: On-Device AI Chat**  · 26
-
-Alternatives:
-- `mycellm — Private AI` · 19
-- `mycellm: Local LLM` · 18
+**Mycellm — Run LLMs** · 18  (current ASC reserved name; kept). Alt: `Mycellm — Distributed AI` · 24
 
 ## Subtitle (≤30)
-**Run private LLMs on your phone** · 30
-
-Alternatives:
-- `Private AI. No cloud. No account.` · 33 ✗ (over)
-- `On-device & peer-to-peer AI` · 27
+**Your node for distributed AI** · 28
 
 ## Promotional text (≤170)
-**Your phone is a real AI computer. Run open LLMs fully on-device — private, offline, no account — then share spare compute with a peer-to-peer network of nodes.** · 159
+**Make your device a node on a distributed AI network. Chat locally on your own hardware, run a private network, or tap the free public net — your models, your rules.** · 164
 
-## Keywords (≤100, comma-separated, no spaces after commas)
-`local ai,offline ai,llm,private gpt,on-device,chatbot,llama,qwen,assistant,p2p,mesh,no cloud,open` · 97
+## Keywords (≤100) — packed with model-name search terms
+`local llm,offline,private,self-hosted,llama,qwen,gemma,mistral,deepseek,phi,glm,minimax,gguf,openai` · 99
 
-> Notes: don't repeat words from the app name/subtitle (Apple already indexes those). "ai", "chat", "phone" are covered by name/subtitle. Singular forms index plural too.
-
-## Description (≤4000)
-
+## Description (≤4000) — 1957 chars
 ```
-mycellm turns your iPhone and iPad into a private AI node. Run real, open large language models entirely on-device — no cloud, no account, no data leaving your hands — and, when you want more power, borrow it from a peer-to-peer network instead of a data center.
+mycellm turns your iPhone or iPad into a node on a distributed AI inference network. Run open LLMs on your own hardware — no account, no telemetry, no cloud middleman. Use it three ways, and own every layer.
 
-It's BitTorrent for LLMs: every device that runs mycellm can both use the network and contribute to it.
+LOCAL — ON YOUR DEVICE
+Load a model and run inference entirely on-device. Fully offline, airplane-mode friendly. On-device Privacy Guard scans prompts for secrets before anything hits the wire.
 
-PRIVATE BY DEFAULT
-• On-device inference. Your conversations run on your own hardware in On-Device mode — fully offline, airplane-mode friendly.
-• No account, ever. No sign-up, no email, no tracking. Your identity is a key that lives only on your device.
-• Privacy Guard scans prompts on-device for sensitive data before anything is sent over a network.
+TRUSTED DEVICES — YOUR OWN NETWORK
+Point your phone at a node you trust — your Mac Studio, your iPad Pro, your homelab — and run models far bigger than any single device could hold. Your phone stays light; a machine you own does the heavy lifting. No cloud.
 
-REAL MODELS, ON YOUR HARDWARE
-• Run popular open models like Qwen, Llama, and Phi in optimized MLX and GGUF formats.
-• Vision-language models: attach a photo and ask about it, on-device.
-• Automatic hardware fit — mycellm picks quantizations that match your device's memory.
+PUBLIC — THE FREE NETWORK
+Tap the public mycellm net: open models served by GPUs worldwide. Earn credits by serving spare compute, spend them to run larger models. Peer-to-peer, no subscription.
 
-A NETWORK, NOT A SERVER
-• Network mode connects you to the public mycellm network so you can run models bigger than your device alone could hold.
-• Earn credits by sharing spare compute; spend them when you borrow it. It's a fair, peer-to-peer exchange — no subscription.
-• Run your own private network for your team or lab, with its own trust and credit rules.
+FEDERATE
+Stand up your own network with its own trust policy and credit ledger, mint invite tokens, and bridge trusted networks with cross-network routing. You decide membership, models, and data flow.
 
-BUILT FOR DEVELOPERS
-• OpenAI-compatible API served right from the app — point your tools at your phone.
-• Live dashboard: tokens/sec, credits, connected peers, and node health at a glance.
+UNLEASH THE iPAD PRO
+An iPad Pro (M4/M5) is a serious AI machine that sits idle most of the day. Put it to work: more unified memory runs larger models, Metal delivers 30+ tok/s on multi-billion-parameter models. Serve your iPhone, your team, or the network — first-class on any device that runs a model.
 
-mycellm is open and transparent about how it works. Bring your own models, keep your data, and help build a distributed alternative to centralized AI.
+FOR PEOPLE WHO RUN THEIR OWN STACK
+- OpenAI-compatible API served straight from the app — point curl, Claude Code, or your own tools at your device.
+- Vision models: attach an image and ask, on-device.
+- Live dashboard: tok/s, credits, peers, node health.
+- Auto hardware-fit: picks quantizations that match your RAM.
+- Open source, Apache 2.0. Audit it, fork it, run it. No black boxes, no lock-in.
 
-Download mycellm, load a model, and start chatting — privately.
-```
-(~1,640 chars — room to expand per ASO testing.)
+It's BitTorrent for LLMs — every node both uses the network and makes it stronger. Full docs and use cases at mycellm.dev.
 
-## What's New — v1.0.0 (≤4000)
-```
-First public release.
-
-• On-device chat with open LLMs (Qwen, Llama, Phi) in MLX and GGUF formats
-• Vision-language models — ask about a photo, on-device
-• Network mode: peer-to-peer inference with an earn/spend credit ledger
-• Private & fleet networks for teams
-• Privacy Guard on-device prompt scanning
-• OpenAI-compatible API served from the app
-• Live node dashboard
-
-Thanks for trying mycellm. Tell us what to build next.
+Bring your own models, keep your data, and run AI on your terms.
 ```
 
-## Promotional / support URLs (canonical = mycellm.dev, verified live)
-- Marketing URL: https://mycellm.dev  (200)
-- Support URL: https://mycellm.dev  (200 — no dedicated /support page yet; add /support or /contact before submission for a cleaner reviewer experience)
-- Privacy Policy URL: https://mycellm.dev/privacy  (200, REQUIRED)
-- Terms of Service URL: https://mycellm.dev/terms  (200)
+## Screenshot captions (framed, uploaded to ASC — iPhone 6.9 + iPad 13)
+1. Dashboard — **A node for distributed AI** · Live stats, credits, peers, health
+2. Chat — **Use your trusted devices** · Your phone, powered by your Mac or iPad  (shows phone in Network mode running Qwen2.5-32B served by studio-m5max @ 78 t/s)
+3. Models — **A world of open models** · Qwen · Gemma · GLM · Mistral · DeepSeek  (HuggingFace catalog: SmolLM2, Qwen 1.5/3/7B, Gemma, Llama, Qwen3-4B, Phi, Mistral, DeepSeek…)
+4. Network — **Local, private & public nets** · Federate trusted networks
+5. Settings — **Your models, your rules** · On-device Privacy Guard built in
 
-## Category
-- Primary: **Developer Tools** (or **Productivity**)
-- Secondary: **Utilities**
+## URLs (canonical mycellm.dev)
+Marketing https://mycellm.dev · Support https://github.com/mycellm/mycellm-ios/issues · Privacy https://mycellm.dev/privacy · Terms https://mycellm.dev/terms
 
-## Age rating
-- 17+ recommended — the app exposes unfiltered LLM output (user-provided models) and open network chat. Answer the rating questionnaire as "Unrestricted Web Access" = No, but "Infrequent/Mild" for mature themes is conservative given uncensored model output. Confirm during submission.
-```
+## Category / age
+Primary Developer Tools (or Productivity), secondary Utilities. 17+ (uncensored, user-supplied models).

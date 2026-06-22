@@ -60,7 +60,13 @@ struct ModelsView: View {
                     }
                 }
             }
-            .onAppear { modelManager.scanLocalModels() }
+            .onAppear {
+                if ScreenshotMode.isActive {
+                    activeSheet = .huggingFace   // show the model catalog for marketing capture
+                } else {
+                    modelManager.scanLocalModels()
+                }
+            }
             .alert("Delete Model?", isPresented: $showDeleteConfirm) {
                 Button("Delete", role: .destructive) {
                     if let file = fileToDelete {
