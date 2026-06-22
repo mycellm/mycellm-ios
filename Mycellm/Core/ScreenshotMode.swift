@@ -26,6 +26,24 @@ enum ScreenshotMode {
     }
 
     #if DEBUG
+    /// Mock connected peers for the Network screen marketing capture.
+    struct MockPeer: Identifiable {
+        let id = UUID()
+        let name: String
+        let device: String
+        let model: String
+        let tps: Double
+        let net: String
+    }
+
+    static let mockPeers: [MockPeer] = [
+        .init(name: "studio-m5max", device: "Mac Studio · M5 Max", model: "Qwen2.5-32B", tps: 78.4, net: "Homelab"),
+        .init(name: "mac-mini", device: "Mac mini · M4", model: "Llama-3.2-3B", tps: 61.2, net: "Homelab"),
+        .init(name: "ipad-pro", device: "iPad Pro · M4", model: "Gemma-2-9B", tps: 44.0, net: "Homelab"),
+        .init(name: "aurora", device: "MacBook Pro · M1 Max", model: "Qwen2.5-Coder-7B", tps: 33.5, net: "Public"),
+        .init(name: "calm-grove", device: "RTX 4090 rig", model: "GLM-4-9B", tps: 121.0, net: "Public"),
+    ]
+
     private static let demoTitle = "On-device chat"
 
     /// Seed a showcase on-device conversation into the chat store so the Chat

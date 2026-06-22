@@ -234,12 +234,61 @@ struct PeersView: View {
 
     private var peersSection: some View {
         VStack(alignment: .leading, spacing: 8) {
+            #if DEBUG
+            if ScreenshotMode.isActive {
+                SectionHeader(title: "Peers", count: ScreenshotMode.mockPeers.count)
+                ForEach(ScreenshotMode.mockPeers) { peer in mockPeerRow(peer) }
+            } else {
+                SectionHeader(title: "Peers", count: 0)
+                EmptyState(message: "No connected peers", icon: "person.2")
+            }
+            #else
             SectionHeader(title: "Peers", count: 0)
-
             EmptyState(message: "No connected peers", icon: "person.2")
+            #endif
         }
         .padding(.horizontal)
     }
+
+    #if DEBUG
+    private func mockPeerRow(_ peer: ScreenshotMode.MockPeer) -> some View {
+        HStack(spacing: 10) {
+            Circle()
+                .fill(Color.sporeGreen)
+                .frame(width: 8, height: 8)
+                .shadow(color: Color.sporeGreen.opacity(0.6), radius: 4)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(peer.name)
+                        .font(.mono(13, weight: .semibold))
+                        .foregroundStyle(Color.consoleText)
+                    Text(peer.net)
+                        .font(.mono(8))
+                        .foregroundStyle(peer.net == "Public" ? Color.relayBlue : Color.poisonPurple)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background((peer.net == "Public" ? Color.relayBlue : Color.poisonPurple).opacity(0.15), in: Capsule())
+                }
+                Text(peer.device)
+                    .font(.mono(10))
+                    .foregroundStyle(Color.consoleDim)
+            }
+            Spacer()
+            VStack(alignment: .trailing, spacing: 2) {
+                Text(peer.model)
+                    .font(.mono(10))
+                    .foregroundStyle(Color.consoleText)
+                Text(String(format: "%.0f tok/s", peer.tps))
+                    .font(.mono(9))
+                    .foregroundStyle(Color.sporeGreen)
+            }
+        }
+        .padding(12)
+        .background(Color.cardBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.cardBorder, lineWidth: 1))
+    }
+    #endif
 
     // MARK: - Join Network Sheet
 

@@ -95,6 +95,28 @@ final class NetworkRegistry: @unchecked Sendable {
         }
     }
 
+    #if DEBUG
+    /// Populate a rich multi-network membership set for App Store screenshot
+    /// capture (gated by ScreenshotMode; compiled out of Release builds).
+    func applyScreenshotFixture() {
+        var pub = NetworkMembership.publicNetwork
+        pub.isConnected = true
+        let homelab = NetworkMembership(
+            id: "homelab", name: "Homelab",
+            bootstrapHost: "studio-m5max.local",
+            trustLevel: .honor, isConnected: true
+        )
+        let fleet = NetworkMembership(
+            id: "studio-fleet", name: "Studio Fleet",
+            bootstrapHost: "fleet.mycellm.dev",
+            fleetKey: "fk_9a3f2c", trustLevel: .relaxed,
+            creditMultiplier: 2.0, isConnected: true
+        )
+        memberships = [pub, homelab, fleet]
+        for m in memberships where ledgers[m.id] == nil { ledgers[m.id] = CreditLedger() }
+    }
+    #endif
+
     /// Join a new network.
     func join(
         name: String,

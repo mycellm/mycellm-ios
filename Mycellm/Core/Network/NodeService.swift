@@ -422,6 +422,7 @@ final class NodeService: @unchecked Sendable {
             NetworkBalance(networkId: "public", balance: 342.75, earned: 409.5, spent: 66.75),
         ]
         modelManager.applyScreenshotFixture()
+        networkRegistry.applyScreenshotFixture()
         stats.addEvent(.nodeStarted)
         stats.addEvent(.modelLoaded("Qwen2.5-3B-Instruct"))
         stats.addEvent(.networkInfo(lan: "192.168.1.42", wan: "73.118.4.207", nat: "Full Cone"))

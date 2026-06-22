@@ -8,7 +8,7 @@ voice; first-class on ANY device that serves a model. Use cases: https://mycellm
 Applied live to App Store Connect (app id 6761091607, 1.0.0). Limits: name 30 · subtitle 30 · promo 170 · keywords 100 · description 4000.
 
 ## App name (≤30)
-**Mycellm — Run LLMs** · 18  (current ASC reserved name; kept). Alt: `Mycellm — Distributed AI` · 24
+**mycellm — Run LLMs** · 18  (current ASC reserved name; kept). Alt: `mycellm — Distributed AI` · 24
 
 ## Subtitle (≤30)
 **Your node for distributed AI** · 28
