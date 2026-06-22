@@ -61,4 +61,4 @@ Bring your own models, keep your data, and run AI on your terms.
 Marketing https://mycellm.dev · Support https://github.com/mycellm/mycellm-ios/issues · Privacy https://mycellm.dev/privacy · Terms https://mycellm.dev/terms
 
 ## Category / age
-Primary Developer Tools (or Productivity), secondary Utilities. 17+ (uncensored, user-supplied models).
+Primary Utilities, secondary Developer Tools (set in ASC). 17+ (uncensored, user-supplied models).
