@@ -17,7 +17,7 @@ Applied live to App Store Connect (app id 6761091607, 1.0.0). Limits: name 30 ·
 **Make your device a node on a distributed AI network. Chat locally on your own hardware, run a private network, or tap the free public net — your models, your rules.** · 164
 
 ## Keywords (≤100) — packed with model-name search terms
-`local llm,offline,private,self-hosted,llama,qwen,gemma,mistral,deepseek,phi,glm,minimax,gguf,openai` · 99
+`local llm,offline,private,self-hosted,llama,qwen,gemma,mistral,deepseek,phi,glm,minimax,gguf,vision` · 99
 
 ## Description (≤4000) — 1957 chars
 ```
@@ -39,7 +39,7 @@ UNLEASH THE iPAD PRO
 An iPad Pro (M4/M5) is a serious AI machine that sits idle most of the day. Put it to work: more unified memory runs larger models, Metal delivers 30+ tok/s on multi-billion-parameter models. Serve your iPhone, your team, or the network — first-class on any device that runs a model.
 
 FOR PEOPLE WHO RUN THEIR OWN STACK
-- OpenAI-compatible API served straight from the app — point curl, Claude Code, or your own tools at your device.
+- Serves the same chat-completions REST API your tools already speak — point curl, Claude Code, or your own clients at your device.
 - Vision models: attach an image and ask, on-device.
 - Live dashboard: tok/s, credits, peers, node health.
 - Auto hardware-fit: picks quantizations that match your RAM.
