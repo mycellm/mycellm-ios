@@ -5,14 +5,20 @@
 <h1 align="center">mycellm_ iOS</h1>
 
 <p align="center">
-  <strong>Native iOS app for the mycellm network.</strong><br>
-  <em>Your iPad serves inference at 30+ tokens/sec on Metal. Also works on iPhone.</em>
+  <strong>iOS &amp; iPadOS app for the mycellm network.</strong><br>
+  <em>An M-series iPad Pro is a desktop-lite powerhouse — 3B+ models at 30+ tokens/sec on Metal. Runs on iPhone too.</em>
+</p>
+
+<p align="center">
+  <a href="https://apps.apple.com/app/id6761091607">
+    <img src="https://developer.apple.com/assets/elements/badges/download-on-the-app-store.svg" alt="Download on the App Store" height="48">
+  </a>
 </p>
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License"></a>
   <a href="https://developer.apple.com/swift/"><img src="https://img.shields.io/badge/swift-6.0-orange.svg" alt="Swift"></a>
-  <a href="https://developer.apple.com/ios/"><img src="https://img.shields.io/badge/iOS-17.0+-black.svg" alt="iOS"></a>
+  <a href="https://developer.apple.com/ios/"><img src="https://img.shields.io/badge/iOS%20%26%20iPadOS-17.0+-black.svg" alt="iOS & iPadOS"></a>
   <a href="https://mycellm.ai"><img src="https://img.shields.io/badge/website-mycellm.ai-spore" alt="Website"></a>
 </p>
 
