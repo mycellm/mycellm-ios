@@ -402,6 +402,36 @@ final class NodeService: @unchecked Sendable {
         stats.totalInferences += 1
         stats.addEvent(.creditSpent(amount, network))
     }
+
+    #if DEBUG
+    /// Apply a realistic, fully-populated node state for App Store screenshot
+    /// capture. Launch-arg gated via `ScreenshotMode`; compiled out of Release
+    /// builds, so no mock state can ship to production. The caller skips
+    /// `start()` / `autoLoadLastModel()` so live networking can't overwrite it.
+    @MainActor
+    func applyScreenshotFixture() {
+        nodeName = "bold-mycel"
+        peerId = "z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH"
+        isRunning = true
+        networkMode = .public
+        connection.bootstrapState = .connected
+        connection.bootstrapTransport = .quic
+        stats.totalInferences = 1287
+        stats.creditBalance = 342.75
+        stats.networkBalances = [
+            NetworkBalance(networkId: "public", balance: 342.75, earned: 409.5, spent: 66.75),
+        ]
+        modelManager.applyScreenshotFixture()
+        networkRegistry.applyScreenshotFixture()
+        stats.addEvent(.nodeStarted)
+        stats.addEvent(.modelLoaded("Qwen2.5-3B-Instruct"))
+        stats.addEvent(.networkInfo(lan: "192.168.1.42", wan: "73.118.4.207", nat: "Full Cone"))
+        stats.addEvent(.peerConnected("calm-grove"))
+        stats.addEvent(.relayDiscovered(name: "aurora", models: 3))
+        stats.addEvent(.inferenceCompleted(model: "Qwen2.5-3B-Instruct", tokens: 312))
+        stats.addEvent(.creditEarned(1.872, "public"))
+    }
+    #endif
 }
 
 // MARK: - Activity Item

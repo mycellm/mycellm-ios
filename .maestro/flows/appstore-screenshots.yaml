@@ -5,7 +5,12 @@ appId: com.mycellm.app
 # Output filenames are 01-09 prefix so a directory listing shows them in
 # the intended marketing-spread order.
 
-- launchApp
+# Launch in screenshot mode — seeds mock chat/stats/models/credits so every
+# scene looks alive, and skips node start() so no Local Network permission
+# prompt interrupts the capture. (DEBUG builds only; inert in Release.)
+- launchApp:
+    arguments:
+      screenshotMode: true
 
 # Dismiss any first-launch prompts that might still appear
 - runFlow:

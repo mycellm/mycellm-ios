@@ -46,6 +46,32 @@ final class ModelManager: @unchecked Sendable {
         }
     }
 
+    #if DEBUG
+    /// Populate fake loaded models + on-disk files for App Store screenshot
+    /// capture (gated by `ScreenshotMode`; compiled out of Release builds).
+    @MainActor
+    func applyScreenshotFixture() {
+        loadedModels = [
+            LoadedModel(
+                name: "Qwen2.5-3B-Instruct",
+                filename: "Qwen2.5-3B-Instruct-4bit",
+                sizeBytes: 1_800_000_000,
+                scope: "public",
+                loadedAt: Date(),
+                paramCountB: 3.0,
+                quant: "4bit",
+                contextLength: 4096,
+                backend: "MLX"
+            ),
+        ]
+        localFiles = [
+            LocalModelFile(filename: "Qwen2.5-3B-Instruct-4bit", path: "/models/Qwen2.5-3B-Instruct-4bit", sizeBytes: 1_800_000_000, isLoaded: true, format: "mlx"),
+            LocalModelFile(filename: "Llama-3.2-3B-Instruct-Q4_K_M.gguf", path: "/models/Llama-3.2-3B-Instruct-Q4_K_M.gguf", sizeBytes: 2_020_000_000, isLoaded: false, format: "gguf"),
+            LocalModelFile(filename: "Phi-3.5-mini-instruct-Q4_K_M.gguf", path: "/models/Phi-3.5-mini-instruct-Q4_K_M.gguf", sizeBytes: 2_390_000_000, isLoaded: false, format: "gguf"),
+        ]
+    }
+    #endif
+
     /// Models directory in app's Documents.
     static var modelsDirectory: URL {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!

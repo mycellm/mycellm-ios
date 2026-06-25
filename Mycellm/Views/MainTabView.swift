@@ -2,7 +2,11 @@ import SwiftUI
 
 /// 5-tab root navigation.
 struct MainTabView: View {
-    @State private var selectedTab = 0
+    // Persist the last-opened tab so reopening the app returns the user to
+    // where they were. First launch defaults to Chat (tag 1) — it's the
+    // primary action and works out of the box (Network mode → public
+    // bootstrap), so it's the strongest first impression and return-to.
+    @AppStorage("lastSelectedTab") private var selectedTab = 1
 
     var body: some View {
         TabView(selection: $selectedTab) {

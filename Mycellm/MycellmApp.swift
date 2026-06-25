@@ -101,9 +101,15 @@ struct RootView: View {
 
             await MainActor.run { KeyboardWarmer.warm() }
 
-            await n.modelManager.autoLoadLastModel()
-
-            Task { await n.start() }
+            if ScreenshotMode.isActive {
+                #if DEBUG
+                await n.applyScreenshotFixture()
+                if let c { await ScreenshotMode.seedChat(into: c) }
+                #endif
+            } else {
+                await n.modelManager.autoLoadLastModel()
+                Task { await n.start() }
+            }
 
             try? await Task.sleep(for: .seconds(2.0))
 

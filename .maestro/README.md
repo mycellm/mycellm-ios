@@ -4,6 +4,13 @@ iOS UI automation for App Store screenshot capture + smoke testing the chat
 flows. Mirrors the WunderGuide `.maestro/` pattern adapted for a native
 Swift app (no Metro / React Native involvement).
 
+> **For App Store marketing capture, prefer the maestro-free path:**
+> `screenshots/capture-screenshots.sh`. It drives the simulator purely via
+> launch arguments (`-screenshotMode YES -lastSelectedTab N`) + `simctl io
+> screenshot` — no Maestro install, no UI-tap flakiness. The app's DEBUG
+> `ScreenshotMode` seeds mock data so every scene looks alive. The Maestro
+> flows below remain for smoke-testing real interaction flows.
+
 ## Files
 
 - `flows/onboarding.yaml` — first-launch: dismiss LAN permission prompt + AI disclaimer
