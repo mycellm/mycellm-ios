@@ -252,7 +252,8 @@ final class NodeService: @unchecked Sendable {
             return ["role": m["role"]?.stringValue ?? "", "content": m["content"]?.stringValue ?? ""]
         } ?? []
         let temp = envelope.payload["temperature"]?.doubleValue ?? 0.7
-        let maxTok = envelope.payload["max_tokens"]?.intValue ?? 2048
+        let maxTok = envelope.payload["max_tokens"]?.intValue
+            ?? envelope.payload["max_completion_tokens"]?.intValue ?? 2048
 
         do {
             let result = try await modelManager.engine.complete(
