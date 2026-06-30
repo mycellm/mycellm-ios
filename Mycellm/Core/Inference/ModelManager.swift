@@ -17,7 +17,7 @@ final class ModelManager: @unchecked Sendable {
         let name: String
         let filename: String
         let sizeBytes: UInt64
-        let scope: String
+        var scope: String
         let loadedAt: Date
         // Capability metadata surfaced on /v1/models/capabilities.
         // Defaults so older call sites that only know name/filename/size
@@ -172,14 +172,14 @@ final class ModelManager: @unchecked Sendable {
         scanLocalModels()
     }
 
-    /// Set model scope (home/public/networks).
+    /// Set model scope (home/public/networks). Preserves capability metadata
+    /// (ctx/backend/params/quant) — a bare reconstruction would reset them to
+    /// defaults and silently downgrade what the node advertises.
     func setScope(_ scope: String, for model: LoadedModel) {
         if let idx = loadedModels.firstIndex(where: { $0.id == model.id }) {
-            let m = loadedModels[idx]
-            loadedModels[idx] = LoadedModel(
-                name: m.name, filename: m.filename,
-                sizeBytes: m.sizeBytes, scope: scope, loadedAt: m.loadedAt
-            )
+            var m = loadedModels[idx]
+            m.scope = scope
+            loadedModels[idx] = m
         }
     }
 
