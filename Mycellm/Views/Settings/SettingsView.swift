@@ -17,6 +17,7 @@ struct SettingsView: View {
                 identitySection
                 nodeSection
                 networkSection
+                fleetSection
                 chatSection
                 privacyGuardSection
                 remoteEndpointSection
@@ -130,6 +131,71 @@ struct SettingsView: View {
                 }
             ))
             .font(.mono(13))
+        }
+    }
+
+    // MARK: - Fleet Management
+
+    private var fleetKeyIsSet: Bool { !(preferences.fleetAdminKey ?? "").isEmpty }
+
+    /// Status derived from key presence + live bootstrap connection — fleet
+    /// commands ride the bootstrap pipe, so they only work once connected.
+    private var fleetStatus: (text: String, color: Color) {
+        guard fleetKeyIsSet else { return ("Disabled — no key", .consoleDim) }
+        switch node.connection.bootstrapState {
+        case .connected: return ("Active — manageable", .sporeGreen)
+        default: return ("Waiting for node connection", .ledgerGold)
+        }
+    }
+
+    private var fleetSection: some View {
+        Section(
+            header: Text("Fleet Management"),
+            footer: Text("Lets a fleet admin remotely query this node and load/unload/scope its models over the network connection. Paste the admin key from your fleet admin. The node must be running and connected (Public, Private, or Fleet mode). Leave blank to disable.").font(.mono(10))
+        ) {
+            HStack {
+                Text("Admin Key")
+                    .font(.mono(13))
+                    .foregroundStyle(Color.consoleDim)
+                SecureField("not set", text: Binding(
+                    get: { preferences.fleetAdminKey ?? "" },
+                    set: { newVal in
+                        let trimmed = newVal.trimmingCharacters(in: .whitespacesAndNewlines)
+                        preferences.fleetAdminKey = trimmed.isEmpty ? nil : trimmed
+                        let key = preferences.fleetAdminKey
+                        // Apply immediately so a running node starts (or stops)
+                        // accepting fleet commands without a restart.
+                        Task { await node.fleetHandler.setFleetKey(key) }
+                    }
+                ))
+                .font(.mono(12))
+                .foregroundStyle(Color.consoleText)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .multilineTextAlignment(.trailing)
+            }
+
+            LabeledContent("Status") {
+                Text(fleetStatus.text)
+                    .font(.mono(12))
+                    .foregroundStyle(fleetStatus.color)
+            }
+
+            if fleetKeyIsSet {
+                LabeledContent("Target Peer ID") {
+                    HStack {
+                        Text(String(node.peerId.prefix(16)) + "…")
+                            .font(.mono(12))
+                            .foregroundStyle(Color.consoleText)
+                        Button {
+                            UIPasteboard.general.string = node.peerId
+                        } label: {
+                            Image(systemName: "doc.on.doc")
+                                .font(.system(size: 14))
+                        }
+                    }
+                }
+            }
         }
     }
 
