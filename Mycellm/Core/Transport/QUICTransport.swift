@@ -160,30 +160,11 @@ actor QUICTransport {
         Log.quic.info(" Parsed: \(msg.type.rawValue) id=\(msg.id)")
 
         if let handler = onMessage, let response = await handler(msg) {
-            // Reply on the SAME bidirectional stream the request arrived on.
-            // The peer (bootstrap relay) does send_and_wait on that stream, so a
-            // reply written to a fresh stream via send() never reaches its waiter
-            // (manifested as a 30s fleet-command/relayed-inference timeout).
-            await reply(response, on: stream)
-        }
-    }
-
-    /// Write a response back on the originating server-initiated stream and
-    /// finish our send direction. Used for relayed request/response (ping→pong,
-    /// inference_req→inference_resp, fleet_command→fleet_response).
-    private func reply(_ message: MessageEnvelope, on stream: NWConnection) async {
-        let cborData = message.toCBOR()
-        Log.quic.info(" Replying \(cborData.count) bytes (type: \(message.type.rawValue)) on incoming stream")
-        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
-            stream.send(content: cborData,
-                        contentContext: .finalMessage,
-                        isComplete: true,
-                        completion: .contentProcessed { error in
-                if let error {
-                    Log.quic.info("Reply send error: \(error.localizedDescription)")
-                }
-                cont.resume()
-            })
+            // Reply on a fresh client-initiated stream. The bootstrap relay's
+            // send_and_wait matches the response by message id on ANY stream
+            // (it sends the request on a unidirectional stream we can't write
+            // back on), so a new stream — same path NodeHello uses — is correct.
+            try? await send(response)
         }
     }
 

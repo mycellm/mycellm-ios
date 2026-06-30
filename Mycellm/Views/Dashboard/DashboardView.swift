@@ -114,6 +114,10 @@ struct DashboardView: View {
             // don't get squeezed side-by-side and wrap on the narrow iPhone
             // header (they sat as siblings in the HStack before).
             VStack(alignment: .trailing, spacing: 4) {
+                if !node.connectivity.isOnline {
+                    offlineBadge
+                }
+
                 if node.networkMode != .standalone && node.isRunning {
                     bootstrapBadge
                 }
@@ -128,6 +132,18 @@ struct DashboardView: View {
             .fixedSize(horizontal: true, vertical: false)
         }
         .padding(.horizontal)
+    }
+
+    private var offlineBadge: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "wifi.slash").font(.system(size: 9))
+            Text("Offline").font(.mono(9, weight: .medium))
+        }
+        .foregroundStyle(Color.ledgerGold)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 3)
+        .background(Color.ledgerGold.opacity(0.15))
+        .clipShape(Capsule())
     }
 
     private var bootstrapBadge: some View {

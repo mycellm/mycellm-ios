@@ -36,6 +36,8 @@ struct ChatView: View {
     @State private var scanTask: Task<Void, Never>?
     @AppStorage("chat_ai_disclaimer_dismissed") private var disclaimerDismissed = false
     @State private var showNewSessionConfirm = false
+    /// Lets the offline nudge jump the user to the Models tab (tag 2).
+    @AppStorage("lastSelectedTab") private var selectedTab = 1
 
     // Session management
     @State private var currentSession: ChatSession?
@@ -147,6 +149,7 @@ struct ChatView: View {
                 Divider().background(Color.cardBorder)
 
                 if !disclaimerDismissed { aiDisclaimer }
+                offlineNudge
                 inputBar
             }
             .background {
@@ -474,17 +477,140 @@ struct ChatView: View {
     }
 
     private func routeToggleLabel(_ r: ChatRoute) -> some View {
-        HStack(spacing: 4) {
-            Image(systemName: r.icon).font(.system(size: 13))
+        // Dim (but don't disable) the Network route when it can't reach anything,
+        // and swap its icon for wifi.slash so the reason is obvious at a glance.
+        let unavailable = (r == .network && !networkReachable)
+        return HStack(spacing: 4) {
+            Image(systemName: unavailable ? "wifi.slash" : r.icon).font(.system(size: 13))
             Text(r.rawValue).font(.mono(12, weight: .medium))
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
         .background(route == r ? routeColor.opacity(0.2) : Color.cardBackground)
         .foregroundStyle(route == r ? routeColor : Color.consoleDim)
+        .opacity(unavailable ? 0.45 : 1)
         .clipShape(RoundedRectangle(cornerRadius: 6))
         .overlay(RoundedRectangle(cornerRadius: 6)
             .stroke(route == r ? routeColor.opacity(0.3) : Color.cardBorder, lineWidth: 1))
+    }
+
+    // MARK: - Connectivity / Offline awareness
+
+    private var isOnline: Bool { node.connectivity.isOnline }
+
+    /// The Network route can only reach something when the device is online AND
+    /// there's a destination: a connected bootstrap or a configured remote endpoint.
+    private var networkReachable: Bool {
+        isOnline && (node.connection.bootstrapState == .connected || !Preferences.shared.remoteEndpoint.isEmpty)
+    }
+
+    private var downloadedModelCount: Int { node.modelManager.localFiles.count }
+
+    /// What on-device chat the user can fall back to right now — drives the nudge.
+    private enum LocalFallback { case ready, needsLoad, needsDownload }
+    private var localFallback: LocalFallback {
+        if node.hasLoadedModel { return .ready }
+        if downloadedModelCount > 0 { return .needsLoad }
+        return .needsDownload
+    }
+
+    /// Shown above the input when the selected route is Network but it can't be
+    /// reached. Explains the situation and offers the right next step without
+    /// blocking the user from reading existing threads.
+    @ViewBuilder
+    private var offlineNudge: some View {
+        if route == .network && !networkReachable {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 6) {
+                    Image(systemName: "wifi.slash").font(.system(size: 13))
+                    Text(isOnline ? "Not connected to a network" : "You're offline")
+                        .font(.mono(11, weight: .medium))
+                    Spacer()
+                }
+                .foregroundStyle(Color.ledgerGold)
+
+                HStack(spacing: 8) {
+                    Image(systemName: offlineNudgeIcon)
+                        .font(.system(size: 12))
+                        .foregroundStyle(Color.consoleDim)
+                    Text(offlineNudgeText)
+                        .font(.mono(10))
+                        .foregroundStyle(Color.consoleDim)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 8)
+                    Button(action: offlineNudgeAction) {
+                        Text(offlineNudgeCTA)
+                            .font(.mono(10, weight: .medium))
+                            .padding(.horizontal, 10).padding(.vertical, 5)
+                            .background(Color.sporeGreen.opacity(0.15))
+                            .foregroundStyle(Color.sporeGreen)
+                            .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 16).padding(.vertical, 8)
+            .background(Color.ledgerGold.opacity(0.08))
+        }
+    }
+
+    private var offlineNudgeIcon: String {
+        switch localFallback {
+        case .ready: return "ipad"
+        case .needsLoad: return "cube.box"
+        case .needsDownload: return "arrow.down.circle"
+        }
+    }
+
+    private var offlineNudgeText: String {
+        switch localFallback {
+        case .ready:
+            let name = node.modelManager.loadedModels.first?.name ?? "your model"
+            return "Chat on-device with \(name) — no connection needed."
+        case .needsLoad:
+            let n = downloadedModelCount
+            return "You have \(n) model\(n == 1 ? "" : "s") downloaded but none loaded. Load one to chat on-device."
+        case .needsDownload:
+            return "No models on this device yet. Download one to chat on-device, anytime."
+        }
+    }
+
+    private var offlineNudgeCTA: String {
+        switch localFallback {
+        case .ready: return "Use On-Device"
+        case .needsLoad: return "Open Models"
+        case .needsDownload: return "Get a Model"
+        }
+    }
+
+    private func offlineNudgeAction() {
+        switch localFallback {
+        case .ready:
+            withAnimation(.easeInOut(duration: 0.2)) {
+                route = .onDevice
+                Preferences.shared.chatRoute = ChatRoute.onDevice.rawValue
+            }
+        case .needsLoad, .needsDownload:
+            selectedTab = 2  // Models tab
+        }
+    }
+
+    /// Append a guidance message when the user sends on the Network route while
+    /// offline with no on-device fallback — instead of a 60s network timeout.
+    private func appendOfflineGuidanceMessage() {
+        let content: String
+        switch localFallback {
+        case .ready:
+            return  // a loaded model exists; caller routes on-device instead
+        case .needsLoad:
+            let n = downloadedModelCount
+            content = "You're offline, so network chat isn't available — and no model is loaded on this device.\n\nOpen the **Models** tab and tap **Load** on one of your \(n) downloaded model\(n == 1 ? "" : "s") to chat on-device."
+        case .needsDownload:
+            content = "You're offline, so network chat isn't available — and there are no models on this device yet.\n\nOpen the **Models** tab to download one. After that you can chat on-device anytime, even with no connection."
+        }
+        var msg = DisplayMessage(role: "assistant", content: content, routedVia: "local")
+        msg.endTime = Date()
+        messages.append(msg)
     }
 
     private var statusDot: some View {
@@ -515,7 +641,7 @@ struct ChatView: View {
     private var statusShort: String {
         switch route {
         case .network:
-            if Preferences.shared.remoteEndpoint.isEmpty { return "No endpoint" }
+            if !networkReachable { return isOnline ? "Unavailable" : "Offline" }
             let model = Preferences.shared.remoteModel
             return model.isEmpty ? "Connected" : model
         case .onDevice:
@@ -534,7 +660,7 @@ struct ChatView: View {
     private var statusColor: Color {
         switch route {
         case .network:
-            return Preferences.shared.remoteEndpoint.isEmpty ? .computeRed : .sporeGreen
+            return networkReachable ? .sporeGreen : (isOnline ? .computeRed : .ledgerGold)
         case .onDevice:
             return node.modelManager.loadedModels.isEmpty ? .ledgerGold : .sporeGreen
         }
@@ -543,10 +669,13 @@ struct ChatView: View {
     private var statusText: String {
         switch route {
         case .network:
+            if !isOnline { return "Offline — switch to On-Device or load a model" }
             let endpoint = Preferences.shared.remoteEndpoint
-            if endpoint.isEmpty { return "No endpoint — configure in Settings" }
+            if endpoint.isEmpty && node.connection.bootstrapState != .connected {
+                return "Not connected to a network"
+            }
             let model = Preferences.shared.remoteModel
-            return model.isEmpty ? endpoint : model
+            return model.isEmpty ? (endpoint.isEmpty ? "Public network" : endpoint) : model
         case .onDevice:
             if let first = node.modelManager.loadedModels.first { return first.name }
             return node.modelManager.localFiles.isEmpty
@@ -729,13 +858,19 @@ struct ChatView: View {
 
         // Images run on-device only (VLM is a local MLX backend); if the user
         // attached an image, force the on-device route.
-        let effectiveRoute: ChatRoute
+        var effectiveRoute: ChatRoute
         if !attachedImages.isEmpty {
             effectiveRoute = .onDevice
         } else if scanResult.action == .blockRedirect && route == .network {
             effectiveRoute = .onDevice
         } else {
             effectiveRoute = route
+        }
+        // Offline: the Network route can't reach anything. Fall back to on-device
+        // when a model is loaded; otherwise guide the user (handled in the switch
+        // below) rather than waiting out a 60s network timeout.
+        if effectiveRoute == .network && !networkReachable && node.hasLoadedModel {
+            effectiveRoute = .onDevice
         }
 
         inputText = ""
@@ -753,7 +888,11 @@ struct ChatView: View {
 
         switch effectiveRoute {
         case .network:
-            sendNetworkMessage()
+            if !networkReachable {
+                appendOfflineGuidanceMessage()
+            } else {
+                sendNetworkMessage()
+            }
         case .onDevice:
             if !node.hasLoadedModel {
                 let errMsg = DisplayMessage(

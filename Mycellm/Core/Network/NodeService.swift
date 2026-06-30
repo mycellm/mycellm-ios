@@ -67,6 +67,8 @@ final class NodeService: @unchecked Sendable {
     // MARK: - Sub-observables
     let stats = NodeStats()
     let connection = NodeConnection()
+    /// Device-level internet reachability (independent of bootstrap state).
+    let connectivity = Connectivity()
 
     // MARK: - Networks
     let networkRegistry = NetworkRegistry()
