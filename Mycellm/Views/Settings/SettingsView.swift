@@ -6,6 +6,7 @@ struct SettingsView: View {
     @Environment(NodeService.self) private var node
     @Environment(\.showScreenSaver) private var showScreenSaver
     @State private var preferences = Preferences.shared
+    @State private var fleetKeyInput: String = ""
     @State private var showingExportKey = false
     @State private var showingTipJar = false
     @State private var safariURL: URL?
@@ -136,7 +137,9 @@ struct SettingsView: View {
 
     // MARK: - Fleet Management
 
-    private var fleetKeyIsSet: Bool { !(preferences.fleetAdminKey ?? "").isEmpty }
+    // Driven off @State (not the non-observable Preferences) so the status
+    // label and Target Peer ID row refresh the moment the key changes.
+    private var fleetKeyIsSet: Bool { !fleetKeyInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
     /// Status derived from key presence + live bootstrap connection — fleet
     /// commands ride the bootstrap pipe, so they only work once connected.
@@ -157,9 +160,14 @@ struct SettingsView: View {
                 Text("Admin Key")
                     .font(.mono(13))
                     .foregroundStyle(Color.consoleDim)
-                SecureField("not set", text: Binding(
-                    get: { preferences.fleetAdminKey ?? "" },
-                    set: { newVal in
+                SecureField("not set", text: $fleetKeyInput)
+                    .font(.mono(12))
+                    .foregroundStyle(Color.consoleText)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .multilineTextAlignment(.trailing)
+                    .onAppear { fleetKeyInput = preferences.fleetAdminKey ?? "" }
+                    .onChange(of: fleetKeyInput) { _, newVal in
                         let trimmed = newVal.trimmingCharacters(in: .whitespacesAndNewlines)
                         preferences.fleetAdminKey = trimmed.isEmpty ? nil : trimmed
                         let key = preferences.fleetAdminKey
@@ -167,12 +175,6 @@ struct SettingsView: View {
                         // accepting fleet commands without a restart.
                         Task { await node.fleetHandler.setFleetKey(key) }
                     }
-                ))
-                .font(.mono(12))
-                .foregroundStyle(Color.consoleText)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .multilineTextAlignment(.trailing)
             }
 
             LabeledContent("Status") {
@@ -456,10 +458,19 @@ struct SettingsView: View {
 
     // MARK: - About
 
+    /// Real marketing version + build from the bundle (was hardcoded "1.0.0 (1)",
+    /// which lied on every build incl. production).
+    private var appVersionString: String {
+        let info = Bundle.main.infoDictionary
+        let v = info?["CFBundleShortVersionString"] as? String ?? "?"
+        let b = info?["CFBundleVersion"] as? String ?? "?"
+        return "\(v) (\(b))"
+    }
+
     private var aboutSection: some View {
         Section("About") {
             LabeledContent("App") {
-                Text("1.0.0 (1)")
+                Text(appVersionString)
                     .font(.mono(12))
                     .foregroundStyle(Color.consoleDim)
             }
