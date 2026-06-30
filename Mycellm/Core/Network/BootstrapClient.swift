@@ -55,6 +55,7 @@ actor BootstrapClient {
     private var deviceCert: DeviceCert?
     private var onStateChange: (@Sendable (ConnectionState, Transport, String?) -> Void)?
     private var onInferenceRequest: ((MessageEnvelope) async -> MessageEnvelope?)?
+    private var onFleetCommand: ((MessageEnvelope) async -> MessageEnvelope?)?
 
     func configure(host: String, port: UInt16) {
         bootstrapHost = host
@@ -71,6 +72,13 @@ actor BootstrapClient {
     /// Set handler for incoming inference requests from the bootstrap relay.
     func setInferenceHandler(_ handler: @escaping (MessageEnvelope) async -> MessageEnvelope?) {
         onInferenceRequest = handler
+    }
+
+    /// Set handler for incoming fleet-admin commands relayed from the bootstrap.
+    /// Fleet commands ride the same outbound QUIC pipe as inference, so an iOS
+    /// node behind NAT is reachable without any inbound listener.
+    func setFleetCommandHandler(_ handler: @escaping (MessageEnvelope) async -> MessageEnvelope?) {
+        onFleetCommand = handler
     }
 
     /// Send a message to the bootstrap over the existing connection — used to
@@ -299,6 +307,8 @@ actor BootstrapClient {
             return nil
         case .inferenceReq:
             return await onInferenceRequest?(envelope)
+        case .fleetCommand:
+            return await onFleetCommand?(envelope)
         case .inferenceStream, .inferenceDone, .inferenceResp, .error:
             // Route streaming/response messages to pending request continuations
             if let qt = quicTransport, await qt.handleStreamMessage(envelope) {

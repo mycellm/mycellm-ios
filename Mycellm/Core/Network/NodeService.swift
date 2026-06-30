@@ -222,6 +222,12 @@ final class NodeService: @unchecked Sendable {
             await bootstrapClient.setInferenceHandler { @Sendable envelope in
                 return await weakSelf.value?.handleRelayedInference(envelope)
             }
+            // Fleet-admin commands ride the same outbound relay pipe (F1-P1).
+            // Enabled only when a fleet admin key is configured.
+            await fleetHandler.setFleetKey(prefs.fleetAdminKey)
+            await bootstrapClient.setFleetCommandHandler { @Sendable envelope in
+                return await weakSelf.value?.handleFleetCommand(envelope)
+            }
 
             stats.addEvent(.networkModeChanged(networkMode))
             await bootstrapClient.connect(peerId: peerId, capabilities: caps, deviceKey: deviceKey, deviceCert: deviceCert)
@@ -298,6 +304,24 @@ final class NodeService: @unchecked Sendable {
             return MessageBuilders.error(from: peerId, requestId: envelope.id,
                                          code: .backendError, message: error.localizedDescription)
         }
+    }
+
+    // MARK: - Fleet Commands (relayed from bootstrap)
+
+    /// Handle a fleet-admin command relayed over the bootstrap pipe and return
+    /// the response envelope. The FleetHandler enforces the admin-key gate; an
+    /// unconfigured key yields a failure response rather than a silent drop.
+    private func handleFleetCommand(_ envelope: MessageEnvelope) async -> MessageEnvelope? {
+        let command = envelope.payload["command"]?.stringValue ?? ""
+        let params = envelope.payload["params"]?.mapValue ?? [:]
+        let adminKey = envelope.payload["fleet_admin_key"]?.stringValue ?? ""
+        let (success, data, error) = await fleetHandler.handle(
+            command: command, params: params, adminKey: adminKey
+        )
+        return MessageBuilders.fleetResponse(
+            from: peerId, requestId: envelope.id,
+            success: success, data: data, error: error
+        )
     }
 
     /// Record an inference served via HTTP (LAN relay).
