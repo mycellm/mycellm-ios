@@ -104,6 +104,10 @@ enum OpenAIRoutes {
         let messages: [Message]
         var temperature: Double? = 0.7
         var max_tokens: Int? = 2048
+        /// OpenAI renamed max_tokens → max_completion_tokens for chat
+        /// completions; newer SDK clients send the new name. Accept it as an
+        /// alias (max_tokens wins if both are present) via `resolvedMaxTokens`.
+        var max_completion_tokens: Int? = nil
         var stream: Bool? = false
         var top_p: Double? = 1.0
         var stop: StringOrArray? = nil
@@ -116,6 +120,9 @@ enum OpenAIRoutes {
         var tool_choice: ToolChoice? = nil
         var reasoning: ReasoningOptions? = nil
         var mycellm: MycellmRouting? = nil
+
+        /// Generation cap: max_tokens, else max_completion_tokens, else 2048.
+        var resolvedMaxTokens: Int { max_tokens ?? max_completion_tokens ?? 2048 }
 
         /// Chat message — supports assistant tool_calls, tool role, and
         /// multimodal (image) content.

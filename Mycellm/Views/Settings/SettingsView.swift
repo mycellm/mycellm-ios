@@ -105,31 +105,20 @@ struct SettingsView: View {
 
     // MARK: - Network
 
+    // Network config now lives WITH each network on the Network tab — endpoint,
+    // fleet key, trust, sharing, and enable/disable are all in a network's card /
+    // detail sheet. Settings keeps only a pointer so there's one home per thing.
     private var networkSection: some View {
-        Section(header: Text("Network"), footer: Text("When on (default), models you load are shared on the public network so this device seeds inference for the public chat. Turn off to keep loaded models private to this device.").font(.mono(10))) {
-            LabeledContent("Bootstrap") {
-                Text(preferences.bootstrapHost)
-                    .font(.mono(12))
+        Section(header: Text("Network"), footer: Text("Manage networks — bootstrap endpoint, fleet key, sharing, trust, and enable/disable — on each network's card in the Network tab.").font(.mono(10))) {
+            LabeledContent {
+                Image(systemName: "arrow.right")
+                    .font(.system(size: 12))
                     .foregroundStyle(Color.consoleDim)
+            } label: {
+                Label("Manage in Network tab", systemImage: "globe")
+                    .font(.mono(13))
+                    .foregroundStyle(Color.consoleText)
             }
-            LabeledContent("Mode") {
-                Text(node.networkMode.displayName)
-                    .font(.mono(12))
-                    .foregroundStyle(Color.relayBlue)
-            }
-            Toggle("Share Models on Public", isOn: Binding(
-                get: { preferences.shareModelsPublicly },
-                set: { on in
-                    preferences.shareModelsPublicly = on
-                    // Re-scope already-loaded models so the toggle takes effect
-                    // immediately (next capability announce propagates it).
-                    let scope = on ? "public" : "home"
-                    for m in node.modelManager.loadedModels {
-                        node.modelManager.setScope(scope, for: m)
-                    }
-                }
-            ))
-            .font(.mono(13))
         }
     }
 
@@ -390,10 +379,19 @@ struct SettingsView: View {
 
     // MARK: - About
 
+    /// Real marketing version + build from the bundle (was hardcoded "1.0.0 (1)",
+    /// which lied on every build incl. production).
+    private var appVersionString: String {
+        let info = Bundle.main.infoDictionary
+        let v = info?["CFBundleShortVersionString"] as? String ?? "?"
+        let b = info?["CFBundleVersion"] as? String ?? "?"
+        return "\(v) (\(b))"
+    }
+
     private var aboutSection: some View {
         Section("About") {
             LabeledContent("App") {
-                Text("1.0.0 (1)")
+                Text(appVersionString)
                     .font(.mono(12))
                     .foregroundStyle(Color.consoleDim)
             }

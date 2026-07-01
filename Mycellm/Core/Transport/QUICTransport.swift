@@ -160,6 +160,10 @@ actor QUICTransport {
         Log.quic.info(" Parsed: \(msg.type.rawValue) id=\(msg.id)")
 
         if let handler = onMessage, let response = await handler(msg) {
+            // Reply on a fresh client-initiated stream. The bootstrap relay's
+            // send_and_wait matches the response by message id on ANY stream
+            // (it sends the request on a unidirectional stream we can't write
+            // back on), so a new stream — same path NodeHello uses — is correct.
             try? await send(response)
         }
     }

@@ -53,8 +53,12 @@ actor BootstrapClient {
     private var capabilities: Capabilities = Capabilities()
     private var deviceKey: DeviceKey?
     private var deviceCert: DeviceCert?
+    /// The network ids this connection declares in its NodeHello (`network_ids`).
+    /// Multi-network: each BootstrapClient advertises the network it is for.
+    private var networkIds: [String] = []
     private var onStateChange: (@Sendable (ConnectionState, Transport, String?) -> Void)?
     private var onInferenceRequest: ((MessageEnvelope) async -> MessageEnvelope?)?
+    private var onFleetCommand: ((MessageEnvelope) async -> MessageEnvelope?)?
 
     func configure(host: String, port: UInt16) {
         bootstrapHost = host
@@ -73,6 +77,13 @@ actor BootstrapClient {
         onInferenceRequest = handler
     }
 
+    /// Set handler for incoming fleet-admin commands relayed from the bootstrap.
+    /// Fleet commands ride the same outbound QUIC pipe as inference, so an iOS
+    /// node behind NAT is reachable without any inbound listener.
+    func setFleetCommandHandler(_ handler: @escaping (MessageEnvelope) async -> MessageEnvelope?) {
+        onFleetCommand = handler
+    }
+
     /// Send a message to the bootstrap over the existing connection — used to
     /// deliver a signed credit receipt after serving, so the consumer co-signs
     /// and settles it into the network tracker. Best-effort.
@@ -82,11 +93,12 @@ actor BootstrapClient {
 
     // MARK: - Connect
 
-    func connect(peerId: String, capabilities: Capabilities, deviceKey: DeviceKey?, deviceCert: DeviceCert?) async {
+    func connect(peerId: String, capabilities: Capabilities, deviceKey: DeviceKey?, deviceCert: DeviceCert?, networkIds: [String] = []) async {
         self.peerId = peerId
         self.capabilities = capabilities
         self.deviceKey = deviceKey
         self.deviceCert = deviceCert
+        self.networkIds = networkIds
         keepRunning = true
         retryCount = 0
         await attemptQUIC()
@@ -148,6 +160,9 @@ actor BootstrapClient {
             cert: cert,
             capabilities: capabilities
         )
+        // Declare which network(s) this connection joins. Python reads the
+        // top-level `network_ids` field from NodeHello to scope membership.
+        nodeHello.networkIds = networkIds
         try? nodeHello.sign(with: dk)
         let helloBytes = nodeHello.toCBOR()
 
@@ -299,6 +314,8 @@ actor BootstrapClient {
             return nil
         case .inferenceReq:
             return await onInferenceRequest?(envelope)
+        case .fleetCommand:
+            return await onFleetCommand?(envelope)
         case .inferenceStream, .inferenceDone, .inferenceResp, .error:
             // Route streaming/response messages to pending request continuations
             if let qt = quicTransport, await qt.handleStreamMessage(envelope) {

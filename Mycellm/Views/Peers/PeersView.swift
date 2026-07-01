@@ -1,12 +1,18 @@
 import SwiftUI
 
+/// Identifiable wrapper so a network id can drive a `.sheet(item:)`.
+private struct NetworkSelection: Identifiable { let id: String }
+
 struct PeersView: View {
     @Environment(NodeService.self) private var node
     @State private var showJoinSheet = false
+    @State private var selection: NetworkSelection?
+    @State private var preferences = Preferences.shared
     @State private var joinName = ""
     @State private var joinHost = ""
     @State private var joinPort = "8421"
     @State private var joinToken = ""
+    @State private var joinFleetKey = ""
     @State private var joinTrust: NetworkMembership.TrustLevel = .strict
 
     var body: some View {
@@ -40,6 +46,21 @@ struct PeersView: View {
             .sheet(isPresented: $showJoinSheet) {
                 joinNetworkSheet
             }
+            .sheet(item: $selection) { sel in
+                NetworkDetailSheet(networkId: sel.id)
+            }
+        }
+    }
+
+    /// Enable/disable a membership: persist the flag and apply live — connect on,
+    /// tear the connection down on off. Works for Public (disable ⇒ private-only).
+    private func setEnabled(_ membership: NetworkMembership, _ on: Bool) {
+        var m = membership
+        m.enabled = on
+        node.networkRegistry.update(m)
+        Task {
+            if on { await node.connectMembership(m) }
+            else { await node.disconnectMembership(networkId: m.id) }
         }
     }
 
@@ -80,36 +101,32 @@ struct PeersView: View {
                         .font(.mono(13, weight: .semibold))
                         .foregroundStyle(Color.consoleText)
 
-                    Text(membership.bootstrapHost + ":" + String(membership.bootstrapPort))
+                    Text(endpointLabel(membership))
                         .font(.mono(10))
                         .foregroundStyle(Color.consoleDim)
                 }
 
                 Spacer()
 
-                // Connection status (for public, use node's bootstrap state)
-                if membership.id == "public" {
-                    HStack(spacing: 4) {
-                        Circle()
-                            .fill(bootstrapDotColor)
-                            .frame(width: 6, height: 6)
-                        Text(node.connection.bootstrapState.displayName)
-                            .font(.mono(9))
-                            .foregroundStyle(Color.consoleDim)
-                        if node.connection.bootstrapTransport != .none {
-                            Text(node.connection.bootstrapTransport.displayName)
-                                .font(.mono(8))
-                                .foregroundStyle(Color.consoleDim)
-                                .padding(.horizontal, 4)
-                                .padding(.vertical, 1)
-                                .background(Color.consoleDim.opacity(0.15))
-                                .clipShape(Capsule())
-                        }
-                    }
-                } else {
+                // Per-network connection status. Every active membership now has
+                // its own connection, tracked in connection.networkStates.
+                let netState = node.connection.state(for: membership.id)
+                HStack(spacing: 4) {
                     Circle()
-                        .fill(Color.consoleDim)
+                        .fill(membership.enabled ? dotColor(for: netState.state) : Color.consoleDim.opacity(0.4))
                         .frame(width: 6, height: 6)
+                    Text(membership.enabled ? netState.state.displayName : "Disabled")
+                        .font(.mono(9))
+                        .foregroundStyle(Color.consoleDim)
+                    if netState.transport != .none {
+                        Text(netState.transport.displayName)
+                            .font(.mono(8))
+                            .foregroundStyle(Color.consoleDim)
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 1)
+                            .background(Color.consoleDim.opacity(0.15))
+                            .clipShape(Capsule())
+                    }
                 }
             }
 
@@ -153,16 +170,15 @@ struct PeersView: View {
 
                 Spacer()
 
-                // Leave button (not for public)
-                if membership.id != "public" {
-                    Button {
-                        node.networkRegistry.leave(networkId: membership.id)
-                    } label: {
-                        Text("Leave")
-                            .font(.mono(10))
-                            .foregroundStyle(Color.computeRed)
-                    }
-                }
+                // Enable/disable this network live. Public can be disabled
+                // (private-only) but never removed — Leave lives in the detail
+                // sheet for private nets only.
+                Toggle("", isOn: Binding(
+                    get: { membership.enabled },
+                    set: { setEnabled(membership, $0) }
+                ))
+                .labelsHidden()
+                .tint(Color.sporeGreen)
             }
 
             // Credits for this network
@@ -186,7 +202,7 @@ struct PeersView: View {
             }
 
             // Error
-            if membership.id == "public", let error = node.connection.bootstrapError {
+            if let error = node.connection.state(for: membership.id).error {
                 Text(error)
                     .font(.mono(9))
                     .foregroundStyle(Color.computeRed)
@@ -199,6 +215,19 @@ struct PeersView: View {
             RoundedRectangle(cornerRadius: 10)
                 .stroke(membership.id == "public" ? Color.relayBlue.opacity(0.2) : Color.cardBorder, lineWidth: 1)
         )
+        // Tapping the card opens the per-network detail sheet, which owns every
+        // setting for this network (endpoint, key, trust, sharing, enable, leave).
+        .contentShape(Rectangle())
+        .onTapGesture { selection = NetworkSelection(id: membership.id) }
+    }
+
+    /// Effective endpoint shown on a card. For Public the endpoint lives in
+    /// Preferences (not the membership fields), so reflect that.
+    private func endpointLabel(_ membership: NetworkMembership) -> String {
+        if membership.id == "public" {
+            return preferences.bootstrapHost + ":" + String(preferences.quicPort)
+        }
+        return membership.bootstrapHost + ":" + String(membership.bootstrapPort)
     }
 
     private func trustBadge(_ level: NetworkMembership.TrustLevel) -> some View {
@@ -220,8 +249,8 @@ struct PeersView: View {
         .clipShape(Capsule())
     }
 
-    private var bootstrapDotColor: Color {
-        switch node.connection.bootstrapState {
+    private func dotColor(for state: BootstrapClient.ConnectionState) -> Color {
+        switch state {
         case .connected: .sporeGreen
         case .connecting, .handshaking, .reconnecting: .ledgerGold
         case .fallbackHTTP: .relayBlue
@@ -337,6 +366,16 @@ struct PeersView: View {
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                     }
+                    HStack {
+                        Text("Fleet Key")
+                            .font(.mono(13))
+                            .foregroundStyle(Color.consoleDim)
+                        SecureField("optional", text: $joinFleetKey)
+                            .font(.mono(13))
+                            .multilineTextAlignment(.trailing)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                    }
                 }
 
                 Section("Trust") {
@@ -365,17 +404,21 @@ struct PeersView: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Join") {
-                        let _ = node.networkRegistry.join(
+                        let membership = node.networkRegistry.join(
                             name: joinName,
                             bootstrapHost: joinHost,
                             bootstrapPort: Int(joinPort) ?? 8421,
                             inviteToken: joinToken.isEmpty ? nil : joinToken,
+                            fleetKey: joinFleetKey.isEmpty ? nil : joinFleetKey,
                             trustLevel: joinTrust
                         )
+                        // Start participating in the new network immediately.
+                        Task { await node.connectMembership(membership) }
                         showJoinSheet = false
                         joinName = ""
                         joinHost = ""
                         joinToken = ""
+                        joinFleetKey = ""
                     }
                     .disabled(joinName.isEmpty || joinHost.isEmpty)
                 }

@@ -17,7 +17,7 @@ final class ModelManager: @unchecked Sendable {
         let name: String
         let filename: String
         let sizeBytes: UInt64
-        let scope: String
+        var scope: String
         let loadedAt: Date
         // Capability metadata surfaced on /v1/models/capabilities.
         // Defaults so older call sites that only know name/filename/size
@@ -142,7 +142,33 @@ final class ModelManager: @unchecked Sendable {
         loadingModelName = file.filename
         loadError = nil
 
-        let effectiveCtxLen = ctxLen ?? Preferences.shared.defaultCtxLen
+        var effectiveCtxLen = ctxLen ?? Preferences.shared.defaultCtxLen
+
+        // KV-aware preflight (MLX dirs with config.json): a model that fits by
+        // size can still blow the jetsam limit once a KV cache is allocated at
+        // long context. Clamp ctx to what fits available memory; reject if even
+        // a minimal context won't. Falls back silently for GGUF / no config.
+        if let est = MemoryEstimate.estimate(
+            modelDir: file.path, weightsBytes: file.sizeBytes, ctxLen: effectiveCtxLen
+        ) {
+            if est.fits {
+                Log.inference.info("KV preflight OK: \(file.filename, privacy: .public) peak ~\(est.peakBytes / 1_048_576)MB / budget \(est.budgetBytes / 1_048_576)MB (maxCtx \(est.maxCtxLen))")
+            } else {
+                let minCtx = 2048
+                if est.maxCtxLen >= minCtx {
+                    Log.inference.warning("KV preflight: \(file.filename, privacy: .public) ctx \(effectiveCtxLen) → \(est.maxCtxLen) (peak ~\(est.peakBytes / 1_048_576)MB > budget \(est.budgetBytes / 1_048_576)MB)")
+                    effectiveCtxLen = est.maxCtxLen
+                } else {
+                    isLoading = false
+                    loadingModelName = nil
+                    let needed = est.weightsBytes + est.kvBytesPerToken * UInt64(minCtx) + est.overheadBytes
+                    let err = MycellmError.modelTooLarge(needed: needed, available: HardwareInfo.availableMemory)
+                    loadError = err.localizedDescription
+                    throw err
+                }
+            }
+        }
+
         do {
             try await engine.loadModel(path: file.path, name: file.filename, ctxLen: effectiveCtxLen)
             let loaded = LoadedModel(
@@ -172,14 +198,14 @@ final class ModelManager: @unchecked Sendable {
         scanLocalModels()
     }
 
-    /// Set model scope (home/public/networks).
+    /// Set model scope (home/public/networks). Preserves capability metadata
+    /// (ctx/backend/params/quant) — a bare reconstruction would reset them to
+    /// defaults and silently downgrade what the node advertises.
     func setScope(_ scope: String, for model: LoadedModel) {
         if let idx = loadedModels.firstIndex(where: { $0.id == model.id }) {
-            let m = loadedModels[idx]
-            loadedModels[idx] = LoadedModel(
-                name: m.name, filename: m.filename,
-                sizeBytes: m.sizeBytes, scope: scope, loadedAt: m.loadedAt
-            )
+            var m = loadedModels[idx]
+            m.scope = scope
+            loadedModels[idx] = m
         }
     }
 

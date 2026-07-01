@@ -92,11 +92,11 @@ actor HTTPServer {
                     ? await engine.stream(
                         multimodal: mmMessages,
                         temperature: req.temperature ?? 0.7,
-                        maxTokens: req.max_tokens ?? 2048)
+                        maxTokens: req.resolvedMaxTokens)
                     : await engine.stream(
                         messages: engineMessages,
                         temperature: req.temperature ?? 0.7,
-                        maxTokens: req.max_tokens ?? 2048)
+                        maxTokens: req.resolvedMaxTokens)
                 // Per-stream <think>-splitter routes tokens to delta.content
                 // vs delta.reasoning_content. No-op for non-thinking models.
                 let splitter = StreamingThinkSplitter(modelName: modelName)
@@ -151,12 +151,12 @@ actor HTTPServer {
                     ? try await engine.complete(
                         multimodal: mmMessages,
                         temperature: req.temperature ?? 0.7,
-                        maxTokens: req.max_tokens ?? 2048,
+                        maxTokens: req.resolvedMaxTokens,
                         tools: requestedTools)
                     : try await engine.complete(
                         messages: engineMessages,
                         temperature: req.temperature ?? 0.7,
-                        maxTokens: req.max_tokens ?? 2048,
+                        maxTokens: req.resolvedMaxTokens,
                         tools: requestedTools)
                 await MainActor.run {
                     nodeService.recordHTTPInference(model: req.model, tokens: result.promptTokens + result.completionTokens)

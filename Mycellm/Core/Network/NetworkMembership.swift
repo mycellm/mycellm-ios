@@ -17,6 +17,12 @@ struct NetworkMembership: Identifiable, Codable, Sendable {
     // Fleet restrictions (pushed by admin, or self-configured)
     var policy: NetworkPolicy = NetworkPolicy()
 
+    /// Whether this node participates in the network. Disabled memberships are
+    /// skipped by NodeService.start() and can be toggled live (connect on, tear
+    /// down on off). Persisted; missing key in older saves decodes as `true`.
+    /// Public can be disabled (private-only mode) but never removed.
+    var enabled: Bool = true
+
     // Connection state (not persisted)
     var isConnected: Bool = false
 
@@ -60,6 +66,15 @@ struct NetworkMembership: Identifiable, Codable, Sendable {
         return "http://\(bootstrapHost):\(NetworkConfig.httpPort)"
     }
 
+    /// Back-compat decoder: every field is optional-with-default so memberships
+    /// saved before a field existed (notably `enabled`) still decode instead of
+    /// throwing keyNotFound (which would silently drop all saved networks). The
+    /// memberwise initializer is preserved by keeping this in an extension.
+    private enum CodingKeys: String, CodingKey {
+        case id, name, bootstrapHost, bootstrapPort, inviteToken, fleetKey
+        case joinedAt, trustLevel, creditMultiplier, policy, enabled, isConnected
+    }
+
     /// The public mycellm network (default membership).
     static let publicNetwork = NetworkMembership(
         id: "public",
@@ -69,6 +84,25 @@ struct NetworkMembership: Identifiable, Codable, Sendable {
         trustLevel: .strict,
         creditMultiplier: 1.0
     )
+}
+
+extension NetworkMembership {
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        name = try c.decodeIfPresent(String.self, forKey: .name) ?? id
+        bootstrapHost = try c.decodeIfPresent(String.self, forKey: .bootstrapHost) ?? ""
+        bootstrapPort = try c.decodeIfPresent(Int.self, forKey: .bootstrapPort) ?? 8421
+        inviteToken = try c.decodeIfPresent(String.self, forKey: .inviteToken)
+        fleetKey = try c.decodeIfPresent(String.self, forKey: .fleetKey)
+        joinedAt = try c.decodeIfPresent(Date.self, forKey: .joinedAt) ?? Date()
+        trustLevel = try c.decodeIfPresent(TrustLevel.self, forKey: .trustLevel) ?? .strict
+        creditMultiplier = try c.decodeIfPresent(Double.self, forKey: .creditMultiplier) ?? 1.0
+        policy = try c.decodeIfPresent(NetworkPolicy.self, forKey: .policy) ?? NetworkPolicy()
+        // Missing in older saves → default to enabled (back-compat).
+        enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
+        isConnected = try c.decodeIfPresent(Bool.self, forKey: .isConnected) ?? false
+    }
 }
 
 /// Manages the list of networks this node belongs to.
