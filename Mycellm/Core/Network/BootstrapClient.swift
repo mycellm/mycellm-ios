@@ -53,6 +53,9 @@ actor BootstrapClient {
     private var capabilities: Capabilities = Capabilities()
     private var deviceKey: DeviceKey?
     private var deviceCert: DeviceCert?
+    /// The network ids this connection declares in its NodeHello (`network_ids`).
+    /// Multi-network: each BootstrapClient advertises the network it is for.
+    private var networkIds: [String] = []
     private var onStateChange: (@Sendable (ConnectionState, Transport, String?) -> Void)?
     private var onInferenceRequest: ((MessageEnvelope) async -> MessageEnvelope?)?
     private var onFleetCommand: ((MessageEnvelope) async -> MessageEnvelope?)?
@@ -90,11 +93,12 @@ actor BootstrapClient {
 
     // MARK: - Connect
 
-    func connect(peerId: String, capabilities: Capabilities, deviceKey: DeviceKey?, deviceCert: DeviceCert?) async {
+    func connect(peerId: String, capabilities: Capabilities, deviceKey: DeviceKey?, deviceCert: DeviceCert?, networkIds: [String] = []) async {
         self.peerId = peerId
         self.capabilities = capabilities
         self.deviceKey = deviceKey
         self.deviceCert = deviceCert
+        self.networkIds = networkIds
         keepRunning = true
         retryCount = 0
         await attemptQUIC()
@@ -156,6 +160,9 @@ actor BootstrapClient {
             cert: cert,
             capabilities: capabilities
         )
+        // Declare which network(s) this connection joins. Python reads the
+        // top-level `network_ids` field from NodeHello to scope membership.
+        nodeHello.networkIds = networkIds
         try? nodeHello.sign(with: dk)
         let helloBytes = nodeHello.toCBOR()
 
