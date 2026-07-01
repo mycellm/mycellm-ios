@@ -7,6 +7,7 @@ struct PeersView: View {
     @State private var joinHost = ""
     @State private var joinPort = "8421"
     @State private var joinToken = ""
+    @State private var joinFleetKey = ""
     @State private var joinTrust: NetworkMembership.TrustLevel = .strict
 
     var body: some View {
@@ -87,29 +88,25 @@ struct PeersView: View {
 
                 Spacer()
 
-                // Connection status (for public, use node's bootstrap state)
-                if membership.id == "public" {
-                    HStack(spacing: 4) {
-                        Circle()
-                            .fill(bootstrapDotColor)
-                            .frame(width: 6, height: 6)
-                        Text(node.connection.bootstrapState.displayName)
-                            .font(.mono(9))
-                            .foregroundStyle(Color.consoleDim)
-                        if node.connection.bootstrapTransport != .none {
-                            Text(node.connection.bootstrapTransport.displayName)
-                                .font(.mono(8))
-                                .foregroundStyle(Color.consoleDim)
-                                .padding(.horizontal, 4)
-                                .padding(.vertical, 1)
-                                .background(Color.consoleDim.opacity(0.15))
-                                .clipShape(Capsule())
-                        }
-                    }
-                } else {
+                // Per-network connection status. Every active membership now has
+                // its own connection, tracked in connection.networkStates.
+                let netState = node.connection.state(for: membership.id)
+                HStack(spacing: 4) {
                     Circle()
-                        .fill(Color.consoleDim)
+                        .fill(dotColor(for: netState.state))
                         .frame(width: 6, height: 6)
+                    Text(netState.state.displayName)
+                        .font(.mono(9))
+                        .foregroundStyle(Color.consoleDim)
+                    if netState.transport != .none {
+                        Text(netState.transport.displayName)
+                            .font(.mono(8))
+                            .foregroundStyle(Color.consoleDim)
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 1)
+                            .background(Color.consoleDim.opacity(0.15))
+                            .clipShape(Capsule())
+                    }
                 }
             }
 
@@ -156,7 +153,9 @@ struct PeersView: View {
                 // Leave button (not for public)
                 if membership.id != "public" {
                     Button {
-                        node.networkRegistry.leave(networkId: membership.id)
+                        let netId = membership.id
+                        Task { await node.disconnectMembership(networkId: netId) }
+                        node.networkRegistry.leave(networkId: netId)
                     } label: {
                         Text("Leave")
                             .font(.mono(10))
@@ -186,7 +185,7 @@ struct PeersView: View {
             }
 
             // Error
-            if membership.id == "public", let error = node.connection.bootstrapError {
+            if let error = node.connection.state(for: membership.id).error {
                 Text(error)
                     .font(.mono(9))
                     .foregroundStyle(Color.computeRed)
@@ -220,8 +219,8 @@ struct PeersView: View {
         .clipShape(Capsule())
     }
 
-    private var bootstrapDotColor: Color {
-        switch node.connection.bootstrapState {
+    private func dotColor(for state: BootstrapClient.ConnectionState) -> Color {
+        switch state {
         case .connected: .sporeGreen
         case .connecting, .handshaking, .reconnecting: .ledgerGold
         case .fallbackHTTP: .relayBlue
@@ -337,6 +336,16 @@ struct PeersView: View {
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                     }
+                    HStack {
+                        Text("Fleet Key")
+                            .font(.mono(13))
+                            .foregroundStyle(Color.consoleDim)
+                        SecureField("optional", text: $joinFleetKey)
+                            .font(.mono(13))
+                            .multilineTextAlignment(.trailing)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                    }
                 }
 
                 Section("Trust") {
@@ -365,17 +374,21 @@ struct PeersView: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Join") {
-                        let _ = node.networkRegistry.join(
+                        let membership = node.networkRegistry.join(
                             name: joinName,
                             bootstrapHost: joinHost,
                             bootstrapPort: Int(joinPort) ?? 8421,
                             inviteToken: joinToken.isEmpty ? nil : joinToken,
+                            fleetKey: joinFleetKey.isEmpty ? nil : joinFleetKey,
                             trustLevel: joinTrust
                         )
+                        // Start participating in the new network immediately.
+                        Task { await node.connectMembership(membership) }
                         showJoinSheet = false
                         joinName = ""
                         joinHost = ""
                         joinToken = ""
+                        joinFleetKey = ""
                     }
                     .disabled(joinName.isEmpty || joinHost.isEmpty)
                 }
