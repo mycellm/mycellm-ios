@@ -226,10 +226,13 @@ final class NodeService: @unchecked Sendable {
             stats.addEvent(.networkModeChanged(networkMode))
             // Connect the PUBLIC network first (honors the editable Settings
             // bootstrap host/port), then every joined private network — the node
-            // participates in all of them simultaneously.
+            // participates in all of them simultaneously. Memberships toggled
+            // OFF (enabled == false) are skipped; Public disabled ⇒ private-only.
             let publicMembership = networkRegistry.memberships.first { $0.id == "public" } ?? .publicNetwork
-            await openConnection(for: publicMembership, prefs: prefs)
-            for membership in networkRegistry.memberships where membership.id != "public" {
+            if publicMembership.enabled {
+                await openConnection(for: publicMembership, prefs: prefs)
+            }
+            for membership in networkRegistry.memberships where membership.id != "public" && membership.enabled {
                 await openConnection(for: membership, prefs: prefs)
             }
         }
@@ -352,15 +355,36 @@ final class NodeService: @unchecked Sendable {
         await openConnection(for: membership, prefs: prefs)
     }
 
-    /// Tear down a private network's connection (called on Leave).
+    /// Tear down a network's connection — called on Leave (private) and on
+    /// Disable (public or private). Public disconnects its shared bootstrapClient
+    /// but keeps the global fleetHandler; private networks drop their per-network
+    /// client + fleet handler entirely.
     func disconnectMembership(networkId: String) async {
-        guard networkId != "public" else { return }
-        if let bc = networkClients[networkId] {
+        if networkId == "public" {
+            await bootstrapClient.disconnect()
+        } else if let bc = networkClients[networkId] {
             await bc.disconnect()
             networkClients.removeValue(forKey: networkId)
+            fleetHandlers.removeValue(forKey: networkId)
         }
-        fleetHandlers.removeValue(forKey: networkId)
-        await MainActor.run { connection.networkStates.removeValue(forKey: networkId) }
+        await MainActor.run {
+            if networkId == "public" {
+                connection.bootstrapState = .disconnected
+                connection.bootstrapTransport = .none
+                connection.bootstrapError = nil
+            }
+            connection.networkStates.removeValue(forKey: networkId)
+        }
+    }
+
+    /// Reconnect a single membership (public or private) in place, applying any
+    /// edited endpoint/fleet-key without restarting the whole node. Used by the
+    /// per-network detail sheet's Reconnect action.
+    func reconnectMembership(_ membership: NetworkMembership) async {
+        guard isRunning, networkMode.usesBootstrap else { return }
+        await disconnectMembership(networkId: membership.id)
+        let prefs = await MainActor.run { Preferences.shared }
+        await openConnection(for: membership, prefs: prefs)
     }
 
     func stop() async {
