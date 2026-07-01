@@ -137,6 +137,21 @@ Built on Apache 2.0 code at github.com/mycellm/mycellm-ios. Python core at githu
 
 ## What's New (For each release)
 
+### v1.0.1
+
+```
+Multi-network support and smarter memory management.
+
+• Join multiple networks at once — stay on the public network while also joining private networks you host
+• Redesigned Network tab: per-network cards with live status, endpoint settings, and Enable/Disable
+• Custom bootstrap host and port with one-tap Reconnect
+• Local-network permission is now requested properly, so private coordinators on your LAN connect reliably
+• Fleet administration: check status and manage your nodes remotely
+• Smarter memory check before loading models — clamps context length instead of running out of memory
+• Accepts max_completion_tokens for chat-completions compatibility
+• Stability improvements
+```
+
 ### v0.3.0 (initial App Store submission)
 
 ```
