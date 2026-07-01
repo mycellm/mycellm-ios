@@ -37,12 +37,40 @@ struct NetworkBalance: Identifiable, Codable, Sendable {
 
 @Observable
 final class NodeConnection: @unchecked Sendable {
+    /// Aggregate/public connection state. Mirrors the PUBLIC network's
+    /// connection so existing single-connection readers (Chat/Dashboard/
+    /// Settings) keep working unchanged.
     var bootstrapState: BootstrapClient.ConnectionState = .disconnected
     var bootstrapTransport: BootstrapClient.Transport = .none
     var bootstrapError: String?
 
+    /// Per-network connection state, keyed by network id. Populated for every
+    /// active membership (including "public"), so the UI can show per-network
+    /// status while `bootstrapState` still reflects the public connection.
+    var networkStates: [String: NetworkConnState] = [:]
+
+    struct NetworkConnState: Sendable {
+        var state: BootstrapClient.ConnectionState = .disconnected
+        var transport: BootstrapClient.Transport = .none
+        var error: String?
+    }
+
+    /// Per-network connection state, defaulting to disconnected when unknown.
+    func state(for networkId: String) -> NetworkConnState {
+        networkStates[networkId] ?? NetworkConnState()
+    }
+
+    /// True when at least one network is connected.
+    var anyConnected: Bool {
+        bootstrapState == .connected || networkStates.values.contains { $0.state == .connected }
+    }
+
+    /// Number of connected networks (each participating network counts as a peer
+    /// link). Falls back to the aggregate public state before per-network state
+    /// is populated.
     var connectedPeers: Int {
-        bootstrapState == .connected ? 1 : 0
+        let n = networkStates.values.filter { $0.state == .connected }.count
+        return n > 0 ? n : (bootstrapState == .connected ? 1 : 0)
     }
 }
 
@@ -83,7 +111,17 @@ final class NodeService: @unchecked Sendable {
 
     // MARK: - Services
     private let httpServer = HTTPServer()
+    /// Primary connection = the PUBLIC network. Kept as a stable property so
+    /// existing readers (e.g. ChatView's QUIC streaming) work unchanged.
     let bootstrapClient = BootstrapClient()
+    /// One BootstrapClient per active network membership, keyed by network id.
+    /// The "public" entry is `bootstrapClient`; private networks get their own
+    /// client (each with its own QUICTransport/state — no shared globals).
+    private var networkClients: [String: BootstrapClient] = [:]
+    /// One FleetHandler per network so a fleet command arriving over network X's
+    /// connection is verified against X's fleet key. The "public" entry is the
+    /// shared `fleetHandler` (kept for Settings' global key + back-compat).
+    private var fleetHandlers: [String: FleetHandler] = [:]
     private let peerManager = PeerManager()
     let creditLedger = CreditLedger()
     let natDiscovery = NATDiscovery()
@@ -185,63 +223,144 @@ final class NodeService: @unchecked Sendable {
         }
 
         if networkMode.usesBootstrap {
-            await bootstrapClient.configure(
-                host: prefs.bootstrapHost,
-                port: UInt16(prefs.quicPort)
-            )
+            stats.addEvent(.networkModeChanged(networkMode))
+            // Connect the PUBLIC network first (honors the editable Settings
+            // bootstrap host/port), then every joined private network — the node
+            // participates in all of them simultaneously.
+            let publicMembership = networkRegistry.memberships.first { $0.id == "public" } ?? .publicNetwork
+            await openConnection(for: publicMembership, prefs: prefs)
+            for membership in networkRegistry.memberships where membership.id != "public" {
+                await openConnection(for: membership, prefs: prefs)
+            }
+        }
+    }
 
-            let weakConn = Weak(self.connection)
-            let weakStats = Weak(self.stats)
-            await bootstrapClient.setStateHandler { @Sendable state, transport, error in
-                Task { @MainActor in
-                    guard let conn = weakConn.value, let stats = weakStats.value else { return }
-                    let prev = conn.bootstrapState
+    // MARK: - Multi-network connections
+
+    /// The BootstrapClient for a network id, creating one for private networks.
+    /// The public network always uses the primary `bootstrapClient`.
+    private func client(for networkId: String) -> BootstrapClient {
+        if networkId == "public" { return bootstrapClient }
+        if let existing = networkClients[networkId] { return existing }
+        let c = BootstrapClient()
+        networkClients[networkId] = c
+        return c
+    }
+
+    /// The FleetHandler for a network id. The public network shares the global
+    /// `fleetHandler`; private networks get their own so per-network fleet keys
+    /// are enforced independently.
+    private func fleetHandler(for networkId: String) async -> FleetHandler {
+        if networkId == "public" { return fleetHandler }
+        if let existing = fleetHandlers[networkId] { return existing }
+        let h = FleetHandler()
+        await h.setNodeService(self)
+        fleetHandlers[networkId] = h
+        return h
+    }
+
+    /// Build the capability advertisement for a connection declaring `networkIds`.
+    private func buildCapabilities(networkIds: [String]) async -> Capabilities {
+        let publicModels = modelManager.loadedModels.filter { $0.scope == "public" }
+        // Backend label: ask the engine which backend is currently active.
+        // mycellm Python advertises "llama.cpp" or "mlx" — match that.
+        let backendRaw = await modelManager.engine.backendName  // "MLX" | "llama.cpp" | "none"
+        let activeBackendLabel = backendRaw.lowercased() == "mlx" ? "mlx" : "llama.cpp"
+        return Capabilities(
+            models: publicModels.map { m in
+                ModelCapability(name: m.name, backend: activeBackendLabel, scope: m.scope)
+            },
+            hardware: HardwareInfo.capabilitiesHardware(),
+            role: publicModels.isEmpty ? "consumer" : "seeder",
+            version: NetworkConfig.version,
+            networkIds: networkIds
+        )
+    }
+
+    /// Configure and connect a single network membership. Idempotent-ish: safe
+    /// to call for the public network (uses the editable Settings endpoint) or a
+    /// private one (uses the membership's endpoint + its fleet key).
+    private func openConnection(for membership: NetworkMembership, prefs: Preferences) async {
+        let networkId = membership.id
+        let isPublic = networkId == "public"
+        let host = isPublic ? prefs.bootstrapHost : membership.bootstrapHost
+        let port = isPublic ? UInt16(prefs.quicPort) : UInt16(membership.bootstrapPort)
+
+        let bc = client(for: networkId)
+        await bc.configure(host: host, port: port)
+
+        // Per-network connection-state handler → updates connection.networkStates,
+        // and mirrors the public network into the aggregate bootstrap* fields.
+        let weakConn = Weak(self.connection)
+        let weakStats = Weak(self.stats)
+        let netName = membership.name
+        await bc.setStateHandler { @Sendable state, transport, error in
+            Task { @MainActor in
+                guard let conn = weakConn.value, let stats = weakStats.value else { return }
+                let prev = conn.state(for: networkId).state
+                conn.networkStates[networkId] = NodeConnection.NetworkConnState(
+                    state: state, transport: transport, error: error
+                )
+                if isPublic {
                     conn.bootstrapState = state
                     conn.bootstrapTransport = transport
                     conn.bootstrapError = error
-                    if state != prev {
-                        switch state {
-                        case .connected:
-                            stats.addEvent(.peerConnected("bootstrap via \(transport.rawValue)"))
-                        case .failed where prev != .failed:
-                            stats.addEvent(.error("Bootstrap: \(error ?? "connection failed")"))
-                        case .fallbackHTTP where prev != .fallbackHTTP:
-                            stats.addEvent(.error("QUIC unavailable — trying HTTP"))
-                        default:
-                            break
-                        }
+                }
+                if state != prev {
+                    switch state {
+                    case .connected:
+                        stats.addEvent(.peerConnected("\(netName) via \(transport.rawValue)"))
+                    case .failed where prev != .failed:
+                        stats.addEvent(.error("\(netName): \(error ?? "connection failed")"))
+                    case .fallbackHTTP where prev != .fallbackHTTP:
+                        stats.addEvent(.error("\(netName): QUIC unavailable — trying HTTP"))
+                    default:
+                        break
                     }
                 }
             }
-
-            let publicModels = modelManager.loadedModels.filter { $0.scope == "public" }
-            // Backend label: ask the engine which backend is currently active.
-            // mycellm Python advertises "llama.cpp" or "mlx" — match that.
-            let backendRaw = await modelManager.engine.backendName  // "MLX" | "llama.cpp" | "none"
-            let activeBackendLabel = backendRaw.lowercased() == "mlx" ? "mlx" : "llama.cpp"
-            let caps = Capabilities(
-                models: publicModels.map { m in
-                    ModelCapability(name: m.name, backend: activeBackendLabel, scope: m.scope)
-                },
-                hardware: HardwareInfo.capabilitiesHardware(),
-                role: publicModels.isEmpty ? "consumer" : "seeder",
-                version: NetworkConfig.version
-            )
-
-            let weakSelf = Weak(self)
-            await bootstrapClient.setInferenceHandler { @Sendable envelope in
-                return await weakSelf.value?.handleRelayedInference(envelope)
-            }
-            // Fleet-admin commands ride the same outbound relay pipe (F1-P1).
-            // Enabled only when a fleet admin key is configured.
-            await fleetHandler.setFleetKey(prefs.fleetAdminKey)
-            await bootstrapClient.setFleetCommandHandler { @Sendable envelope in
-                return await weakSelf.value?.handleFleetCommand(envelope)
-            }
-
-            stats.addEvent(.networkModeChanged(networkMode))
-            await bootstrapClient.connect(peerId: peerId, capabilities: caps, deviceKey: deviceKey, deviceCert: deviceCert)
         }
+
+        let caps = await buildCapabilities(networkIds: [networkId])
+
+        let weakSelf = Weak(self)
+        let weakClient = Weak(bc)
+        await bc.setInferenceHandler { @Sendable envelope in
+            return await weakSelf.value?.handleRelayedInference(envelope, client: weakClient.value)
+        }
+        // Fleet-admin commands ride the same outbound relay pipe (F1-P1).
+        // Each connection resolves against its network's fleet key, falling back
+        // to the global Preferences.fleetAdminKey when the membership has none.
+        let handler = await fleetHandler(for: networkId)
+        await handler.setFleetKey(membership.fleetKey ?? prefs.fleetAdminKey)
+        await bc.setFleetCommandHandler { @Sendable envelope in
+            return await weakSelf.value?.handleFleetCommand(envelope, using: handler)
+        }
+
+        await bc.connect(
+            peerId: peerId, capabilities: caps,
+            deviceKey: deviceKey, deviceCert: deviceCert,
+            networkIds: [networkId]
+        )
+    }
+
+    /// Open a connection to a newly-joined membership without restarting the
+    /// node. Called by the Join UI so the node starts participating immediately.
+    func connectMembership(_ membership: NetworkMembership) async {
+        guard isRunning, networkMode.usesBootstrap else { return }
+        let prefs = await MainActor.run { Preferences.shared }
+        await openConnection(for: membership, prefs: prefs)
+    }
+
+    /// Tear down a private network's connection (called on Leave).
+    func disconnectMembership(networkId: String) async {
+        guard networkId != "public" else { return }
+        if let bc = networkClients[networkId] {
+            await bc.disconnect()
+            networkClients.removeValue(forKey: networkId)
+        }
+        fleetHandlers.removeValue(forKey: networkId)
+        await MainActor.run { connection.networkStates.removeValue(forKey: networkId) }
     }
 
     func stop() async {
@@ -249,16 +368,25 @@ final class NodeService: @unchecked Sendable {
         await httpServer.stop()
         relayManager.stopPolling()
         await bootstrapClient.disconnect()
+        for (_, bc) in networkClients {
+            await bc.disconnect()
+        }
+        networkClients.removeAll()
+        fleetHandlers.removeAll()
         connection.bootstrapState = .disconnected
         connection.bootstrapTransport = .none
         connection.bootstrapError = nil
+        connection.networkStates.removeAll()
         isRunning = false
         stats.addEvent(.nodeStopped)
     }
 
     // MARK: - Relayed Inference (from bootstrap)
 
-    private func handleRelayedInference(_ envelope: MessageEnvelope) async -> MessageEnvelope? {
+    private func handleRelayedInference(_ envelope: MessageEnvelope, client: BootstrapClient? = nil) async -> MessageEnvelope? {
+        // Reply/receipt travels back over the connection the request arrived on
+        // (defaults to the public bootstrapClient for back-compat).
+        let replyClient = client ?? bootstrapClient
         guard let model = envelope.payload["model"]?.stringValue else {
             return MessageBuilders.error(from: peerId, requestId: envelope.id,
                                          code: .invalidMessage, message: "Missing model")
@@ -302,7 +430,7 @@ final class NodeService: @unchecked Sendable {
                     signature: receipt.signature,
                     requestId: receipt.requestId
                 )
-                await bootstrapClient.send(receiptMsg)
+                await replyClient.send(receiptMsg)
             }
 
             return MessageBuilders.inferenceResponse(
@@ -322,11 +450,11 @@ final class NodeService: @unchecked Sendable {
     /// Handle a fleet-admin command relayed over the bootstrap pipe and return
     /// the response envelope. The FleetHandler enforces the admin-key gate; an
     /// unconfigured key yields a failure response rather than a silent drop.
-    private func handleFleetCommand(_ envelope: MessageEnvelope) async -> MessageEnvelope? {
+    private func handleFleetCommand(_ envelope: MessageEnvelope, using handler: FleetHandler? = nil) async -> MessageEnvelope? {
         let command = envelope.payload["command"]?.stringValue ?? ""
         let params = envelope.payload["params"]?.mapValue ?? [:]
         let adminKey = envelope.payload["fleet_admin_key"]?.stringValue ?? ""
-        let (success, data, error) = await fleetHandler.handle(
+        let (success, data, error) = await (handler ?? fleetHandler).handle(
             command: command, params: params, adminKey: adminKey
         )
         return MessageBuilders.fleetResponse(
@@ -451,13 +579,18 @@ final class NodeService: @unchecked Sendable {
         networkMode = .public
         connection.bootstrapState = .connected
         connection.bootstrapTransport = .quic
+        networkRegistry.applyScreenshotFixture()
+        for m in networkRegistry.memberships {
+            connection.networkStates[m.id] = NodeConnection.NetworkConnState(
+                state: .connected, transport: .quic, error: nil
+            )
+        }
         stats.totalInferences = 1287
         stats.creditBalance = 342.75
         stats.networkBalances = [
             NetworkBalance(networkId: "public", balance: 342.75, earned: 409.5, spent: 66.75),
         ]
         modelManager.applyScreenshotFixture()
-        networkRegistry.applyScreenshotFixture()
         stats.addEvent(.nodeStarted)
         stats.addEvent(.modelLoaded("Qwen2.5-3B-Instruct"))
         stats.addEvent(.networkInfo(lan: "192.168.1.42", wan: "73.118.4.207", nat: "Full Cone"))
