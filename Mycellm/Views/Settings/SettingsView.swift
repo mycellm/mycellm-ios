@@ -108,11 +108,51 @@ struct SettingsView: View {
     // MARK: - Network
 
     private var networkSection: some View {
-        Section(header: Text("Network"), footer: Text("When on (default), models you load are shared on the public network so this device seeds inference for the public chat. Turn off to keep loaded models private to this device.").font(.mono(10))) {
-            LabeledContent("Bootstrap") {
-                Text(preferences.bootstrapHost)
-                    .font(.mono(12))
+        Section(header: Text("Network"), footer: Text("Bootstrap is the coordinator this device connects to. Leave it as the public network, or point it at your own private coordinator (e.g. hokulea.local) and tap Reconnect. Sharing shares loaded models on that network so this device seeds inference; turn off to keep them private.").font(.mono(10))) {
+            HStack {
+                Text("Bootstrap")
+                    .font(.mono(13))
                     .foregroundStyle(Color.consoleDim)
+                TextField("bootstrap.mycellm.dev", text: Binding(
+                    get: { preferences.bootstrapHost },
+                    set: { newVal in
+                        let t = newVal.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !t.isEmpty { preferences.bootstrapHost = t }
+                    }
+                ))
+                .font(.mono(12))
+                .foregroundStyle(Color.consoleText)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .keyboardType(.URL)
+                .multilineTextAlignment(.trailing)
+            }
+            HStack {
+                Text("QUIC Port")
+                    .font(.mono(13))
+                    .foregroundStyle(Color.consoleDim)
+                TextField("8421", text: Binding(
+                    get: { String(preferences.quicPort) },
+                    set: { preferences.quicPort = Int($0.filter(\.isNumber)) ?? preferences.quicPort }
+                ))
+                .font(.mono(12))
+                .foregroundStyle(Color.consoleText)
+                .keyboardType(.numberPad)
+                .multilineTextAlignment(.trailing)
+            }
+            Button {
+                // Restart the node so it reconnects to the (possibly changed)
+                // bootstrap host/port.
+                Task {
+                    if node.isRunning { await node.stop() }
+                    await node.start()
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "arrow.triangle.2.circlepath").font(.system(size: 13))
+                    Text("Reconnect to Bootstrap").font(.mono(13, weight: .medium))
+                }
+                .foregroundStyle(Color.relayBlue)
             }
             LabeledContent("Mode") {
                 Text(node.networkMode.displayName)
