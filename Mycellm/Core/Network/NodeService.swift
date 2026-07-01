@@ -69,6 +69,9 @@ final class NodeService: @unchecked Sendable {
     let connection = NodeConnection()
     /// Device-level internet reachability (independent of bootstrap state).
     let connectivity = Connectivity()
+    /// LAN Bonjour browse — triggers the iOS Local Network permission prompt
+    /// (required to reach a coordinator by LAN IP/.local) and discovers coordinators.
+    let localDiscovery = LocalNetworkDiscovery()
 
     // MARK: - Networks
     let networkRegistry = NetworkRegistry()
@@ -147,6 +150,11 @@ final class NodeService: @unchecked Sendable {
         guard !isRunning else { return }
         isRunning = true
         stats.addEvent(.nodeStarted)
+
+        // Start the LAN browse — this also triggers the iOS Local Network
+        // permission prompt, without which connecting to a coordinator by LAN
+        // IP or .local is silently blocked at the OS layer.
+        localDiscovery.start()
 
         let prefs = await MainActor.run { Preferences.shared }
 
