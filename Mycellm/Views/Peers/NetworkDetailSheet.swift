@@ -120,6 +120,7 @@ struct NetworkDetailSheet: View {
             HStack {
                 Text("QUIC Port").font(.mono(13)).foregroundStyle(Color.consoleDim)
                 TextField("8421", text: portBinding(membership))
+                    .accessibilityIdentifier("detail.port")
                     .font(.mono(12))
                     .foregroundStyle(Color.consoleText)
                     .keyboardType(.numberPad)
@@ -151,6 +152,7 @@ struct NetworkDetailSheet: View {
             HStack {
                 Text("Admin Key").font(.mono(13)).foregroundStyle(Color.consoleDim)
                 RevealableSecureField("not set", text: fleetKeyBinding(membership))
+                    .accessibilityIdentifier("detail.fleetKey")
             }
         }
         if !isPublic {
@@ -158,6 +160,7 @@ struct NetworkDetailSheet: View {
                 HStack {
                     Text("Join Key").font(.mono(13)).foregroundStyle(Color.consoleDim)
                     RevealableSecureField("not set", text: joinKeyBinding(membership))
+                        .accessibilityIdentifier("detail.joinKey")
                 }
             }
         }

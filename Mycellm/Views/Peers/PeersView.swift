@@ -342,6 +342,7 @@ struct PeersView: View {
                             .font(.mono(13))
                             .foregroundStyle(Color.consoleDim)
                         TextField("My Lab Network", text: $joinName)
+                            .accessibilityIdentifier("join.name")
                             .font(.mono(13))
                             .multilineTextAlignment(.trailing)
                             .textInputAutocapitalization(.never)
@@ -351,6 +352,7 @@ struct PeersView: View {
                             .font(.mono(13))
                             .foregroundStyle(Color.consoleDim)
                         TextField("192.168.1.100", text: $joinHost)
+                            .accessibilityIdentifier("join.host")
                             .font(.mono(13))
                             .multilineTextAlignment(.trailing)
                             .textInputAutocapitalization(.never)
@@ -361,6 +363,7 @@ struct PeersView: View {
                             .font(.mono(13))
                             .foregroundStyle(Color.consoleDim)
                         TextField("8421", text: $joinPort)
+                            .accessibilityIdentifier("join.port")
                             .font(.mono(13))
                             .multilineTextAlignment(.trailing)
                             .keyboardType(.numberPad)
@@ -373,6 +376,7 @@ struct PeersView: View {
                             .font(.mono(13))
                             .foregroundStyle(Color.consoleDim)
                         TextField("optional", text: $joinToken)
+                            .accessibilityIdentifier("join.inviteToken")
                             .font(.mono(13))
                             .multilineTextAlignment(.trailing)
                             .textInputAutocapitalization(.never)
@@ -416,12 +420,14 @@ struct PeersView: View {
                             .font(.mono(13))
                             .foregroundStyle(Color.consoleDim)
                         RevealableSecureField("optional", text: $joinKey)
+                            .accessibilityIdentifier("join.joinKey")
                     }
                     HStack {
                         Text("Fleet Key")
                             .font(.mono(13))
                             .foregroundStyle(Color.consoleDim)
                         RevealableSecureField("optional", text: $joinFleetKey)
+                            .accessibilityIdentifier("join.fleetKey")
                     }
                 } header: {
                     Text("Credentials")
