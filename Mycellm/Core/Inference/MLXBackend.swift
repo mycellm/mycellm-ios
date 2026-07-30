@@ -141,6 +141,17 @@ actor MLXBackend: InferenceBackend {
     private let kvStore = KVCacheStore()
     private let kvCacheReuseEnabled = true
 
+    /// Generation parameters honoring the bounded-KV preference: with
+    /// Preferences.maxKVSize > 0, mlx-swift-lm uses a rotating KV cache
+    /// capped at that many tokens (older entries overwritten) — jetsam
+    /// headroom on tight devices, mirroring the node's max_kv_size.
+    private static func makeParameters(maxTokens: Int, temperature: Double) -> GenerateParameters {
+        var p = GenerateParameters(maxTokens: maxTokens, temperature: Float(temperature))
+        let bound = Preferences.maxKVSizeValue
+        if bound > 0 { p.maxKVSize = bound }
+        return p
+    }
+
     func loadModel(path: String, name: String, ctxLen: Int) async throws {
         // Clean up previous model
         container = nil
@@ -215,16 +226,13 @@ actor MLXBackend: InferenceBackend {
 
         let augmented = injectToolsIntoSystem(messages, tools: tools)
         let prompt = formatMessages(augmented)
-        let parameters = GenerateParameters(
-            maxTokens: maxTokens,
-            temperature: Float(temperature)
-        )
+        let parameters = Self.makeParameters(maxTokens: maxTokens, temperature: temperature)
         let startTime = Date()
 
         // container.perform's closure is @Sendable; capture-by-value the
         // primitives + the @unchecked-Sendable cache store, and build the
         // input inside the closure to avoid non-Sendable type capture.
-        let reuseEnabled = kvCacheReuseEnabled
+        let reuseEnabled = kvCacheReuseEnabled && Preferences.maxKVSizeValue == 0
         let store = kvStore
         let modelNameSnap = loadedModel ?? ""
         let (rawText, promptTokens, completionTokens) = try await container.perform { context in
@@ -256,7 +264,9 @@ actor MLXBackend: InferenceBackend {
             }
             // Report the full logical prompt size even when only the suffix
             // was prefilled, so token accounting matches a cold turn.
-            return (text, fullTokens.count, completed)
+            // (Cache committed the raw text; the caller gets it stop-trimmed —
+            // chat templates can end turns with a marker that isn't the eos.)
+            return (StopFilter.truncate(text), fullTokens.count, completed)
         }
 
         let elapsed = Date().timeIntervalSince(startTime)
@@ -292,16 +302,13 @@ actor MLXBackend: InferenceBackend {
                     }
                     let augmented = self.injectToolsIntoSystem(messages, tools: tools)
                     let prompt = self.formatMessages(augmented)
-                    let parameters = GenerateParameters(
-                        maxTokens: maxTokens,
-                        temperature: Float(temperature)
-                    )
+                    let parameters = Self.makeParameters(maxTokens: maxTokens, temperature: temperature)
                     let startTime = Date()
 
                     // continuation is Sendable; safe to capture. Build the
                     // input inside the closure and pass a count out via the
                     // return value. Cross-turn KV cache reuse mirrors complete().
-                    let reuseEnabled = self.kvCacheReuseEnabled
+                    let reuseEnabled = self.kvCacheReuseEnabled && Preferences.maxKVSizeValue == 0
                     let store = self.kvStore
                     let modelNameSnap = self.loadedModel ?? ""
                     let count: Int = try await container.perform { context in
@@ -314,6 +321,10 @@ actor MLXBackend: InferenceBackend {
 
                         var emitted = 0
                         var text = ""
+                        // Withhold potential stop-marker prefixes: streamed
+                        // text can't be recalled once yielded (mirror of the
+                        // Python node's stop-holdback).
+                        var stopFilter = StopFilter()
                         let stream = try MLXLMCommon.generate(
                             input: resolved.input,
                             cache: resolved.cache,
@@ -323,11 +334,15 @@ actor MLXBackend: InferenceBackend {
                         for await batch in stream {
                             if Task.isCancelled { break }
                             if let chunk = batch.chunk {
-                                continuation.yield(chunk)
+                                let out = stopFilter.feed(chunk)
+                                if !out.isEmpty { continuation.yield(out) }
                                 text += chunk
                                 emitted += 1
+                                if stopFilter.hitStop { break }
                             }
                         }
+                        let tail = stopFilter.flush()
+                        if !tail.isEmpty { continuation.yield(tail) }
                         if reuseEnabled {
                             Self.commitCache(store, context: context, cache: resolved.cache,
                                              fullTokens: fullTokens, generatedText: text, modelName: modelNameSnap)
@@ -455,7 +470,7 @@ actor MLXBackend: InferenceBackend {
         // Inject tools on the actor (Sendable result), then build the
         // non-Sendable UserInput inside the closure.
         let augmented = injectToolsIntoSystem(messages, tools: tools)
-        let parameters = GenerateParameters(maxTokens: maxTokens, temperature: Float(temperature))
+        let parameters = Self.makeParameters(maxTokens: maxTokens, temperature: temperature)
         let startTime = Date()
 
         let (rawText, promptTokens, completionTokens) = try await container.perform { context in
@@ -504,7 +519,7 @@ actor MLXBackend: InferenceBackend {
                         throw MycellmError.modelNotLoaded("No MLX model loaded")
                     }
                     let augmented = await self.injectToolsIntoSystem(messages, tools: tools)
-                    let parameters = GenerateParameters(maxTokens: maxTokens, temperature: Float(temperature))
+                    let parameters = Self.makeParameters(maxTokens: maxTokens, temperature: temperature)
                     let startTime = Date()
 
                     let count: Int = try await container.perform { context in
@@ -514,13 +529,18 @@ actor MLXBackend: InferenceBackend {
                             input: lmInput, parameters: parameters, context: context
                         )
                         var emitted = 0
+                        var stopFilter = StopFilter()
                         for await batch in stream {
                             if Task.isCancelled { break }
                             if let chunk = batch.chunk {
-                                continuation.yield(chunk)
+                                let out = stopFilter.feed(chunk)
+                                if !out.isEmpty { continuation.yield(out) }
                                 emitted += 1
+                                if stopFilter.hitStop { break }
                             }
                         }
+                        let tail = stopFilter.flush()
+                        if !tail.isEmpty { continuation.yield(tail) }
                         return emitted
                     }
 

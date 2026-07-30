@@ -48,6 +48,25 @@ enum ToolCallParser {
             into: &calls
         )
 
+        // Pattern 1.5: envelope cut off by max_tokens — "<tool_call>{...}"
+        // with no closing tag, possibly ending mid-"</tool_ca". Salvage the
+        // JSON payload instead of surfacing a broken envelope as content.
+        // (Mirror of the Python node's _recover_truncated_tool_call.)
+        if calls.isEmpty, let openRange = remaining.range(of: "<tool_call>") {
+            var payload = String(remaining[openRange.upperBound...])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let closing = "</tool_call>"
+            for k in stride(from: closing.count, through: 1, by: -1) where payload.hasSuffix(String(closing.prefix(k))) {
+                payload = String(payload.dropLast(k))
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                break
+            }
+            if let call = parseSingleToolCallJSON(payload) {
+                calls.append(call)
+                remaining = String(remaining[remaining.startIndex..<openRange.lowerBound])
+            }
+        }
+
         // Pattern 2: <tools>[...]</tools> (multi-tool array)
         remaining = extractAndStripMulti(
             pattern: "<tools>",

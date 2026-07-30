@@ -36,6 +36,7 @@ final class ModelDownloader: NSObject, @unchecked Sendable, URLSessionDownloadDe
         enum State: String {
             case pending = "Pending"
             case downloading = "Downloading"
+            case verifying = "Verifying"
             case completed = "Completed"
             case failed = "Failed"
             case cancelled = "Cancelled"
@@ -161,10 +162,23 @@ final class ModelDownloader: NSObject, @unchecked Sendable, URLSessionDownloadDe
             resourceValues.isExcludedFromBackup = true
             try destURL.setResourceValues(resourceValues)
 
+            // Verify against HF's published content hash before declaring
+            // success (mirror of the Python node's download verification).
+            // Unreachable tree API → unverified but accepted (offline-safe);
+            // a hash mismatch deletes the file and fails the download.
+            let repoId = activeDownloads[idx].repoId
             DispatchQueue.main.async { [self] in
                 guard let idx = activeDownloads.firstIndex(where: { $0.id == dlId }) else { return }
-                activeDownloads[idx].state = .completed
+                activeDownloads[idx].state = .verifying
                 activeDownloads[idx].progress = 1.0
+            }
+            Task { [weak self] in
+                let expected = await HFVerify.fetchExpectedHash(repoId: repoId, filename: filename)
+                let ok = (try? HFVerify.verify(file: destination, expected: expected, filename: filename)) != nil
+                await MainActor.run { [weak self] in
+                    guard let self, let idx = self.activeDownloads.firstIndex(where: { $0.id == dlId }) else { return }
+                    self.activeDownloads[idx].state = ok ? .completed : .failed
+                }
             }
         } catch {
             DispatchQueue.main.async { [self] in

@@ -139,6 +139,22 @@ final class Preferences: @unchecked Sendable {
         set { defaults.set(newValue, forKey: "default_ctx_len") }
     }
 
+    /// Bounded (rotating) KV cache size in tokens for MLX generation.
+    /// 0 (default) = unbounded — KV grows with the context. On jetsam-tight
+    /// devices a bound (e.g. 4096) caps per-request KV memory: older entries
+    /// are overwritten, trading long-context recall for headroom. Mirrors the
+    /// Python node's per-model max_kv_size.
+    var maxKVSize: Int {
+        get { defaults.object(forKey: "max_kv_size") as? Int ?? 0 }
+        set { defaults.set(newValue, forKey: "max_kv_size") }
+    }
+
+    /// Nonisolated read of maxKVSize for inference actors — `shared` is
+    /// MainActor-bound but UserDefaults itself is thread-safe.
+    nonisolated static var maxKVSizeValue: Int {
+        UserDefaults.standard.object(forKey: "max_kv_size") as? Int ?? 0
+    }
+
     /// When true (default), a model you load in the app is shared on the public
     /// network (scope "public") so this node seeds inference for the public
     /// chat. When false it stays private to this device (scope "home"). The
