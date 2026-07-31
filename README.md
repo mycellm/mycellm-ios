@@ -140,6 +140,7 @@ Built by [Michael Gifford-Santos](https://github.com/mijkal).
 
 - **AI pair programming**: [Claude Code](https://claude.ai/code) by Anthropic
 - **Inference**: [llama.swift](https://github.com/mattt/llama.swift) by Mattt · [mlx-swift-lm](https://github.com/ml-explore/mlx-swift-lm) by Apple
+- **Design references**: streaming stop-sequence holdback and tool-call recovery inspired by [oMLX](https://github.com/jundot/omlx); verified downloads inspired by [turbo-fieldfare](https://github.com/drumih/turbo-fieldfare) — see the main repo's [NOTICE](https://github.com/mycellm/mycellm/blob/main/NOTICE)
 - **HTTP server**: [Hummingbird](https://github.com/hummingbird-project/hummingbird)
 - **Serialization**: [SwiftCBOR](https://github.com/valpackett/SwiftCBOR)
 - **Typography**: [JetBrains Mono](https://github.com/JetBrains/JetBrainsMono)
