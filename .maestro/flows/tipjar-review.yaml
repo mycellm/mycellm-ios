@@ -1,0 +1,39 @@
+appId: com.mycellm.app
+---
+# Tip-jar review screenshot — open Settings, scroll to the tip jar row,
+# open the sheet, and capture it. Used as the App Store Connect IAP
+# review screenshot (the sheet renders tier labels even when StoreKit
+# products aren't loadable in the simulator).
+
+- launchApp
+
+- runFlow:
+    when:
+      visible:
+        text: "Allow"
+    commands:
+      - tapOn: "Allow"
+- runFlow:
+    when:
+      visible:
+        text: "Got it"
+    commands:
+      - tapOn: "Got it"
+
+- tapOn:
+    text: "Settings"
+- waitForAnimationToEnd
+
+# Tip jar sits between About and the footer — scroll until visible.
+- scrollUntilVisible:
+    element:
+      text: "Buy Me a Coffee"
+    direction: DOWN
+
+- takeScreenshot: out/tipjar-row
+
+- tapOn:
+    text: "Buy Me a Coffee"
+- waitForAnimationToEnd
+
+- takeScreenshot: out/tipjar-sheet

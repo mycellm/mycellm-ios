@@ -180,3 +180,27 @@ final class ToolCallParserTests: XCTestCase {
         XCTAssertEqual(result.residualContent, raw)
     }
 }
+
+// MARK: - Truncated envelope recovery (max_tokens cuts mid-marker)
+
+extension ToolCallParserTests {
+    func testTruncatedMidClosingTagRecovered() {
+        let r = ToolCallParser.extract(
+            from: "<tool_call>{\"name\": \"get_weather\", \"arguments\": {\"city\": \"SF\"}}</tool_ca")
+        XCTAssertEqual(r.toolCalls.count, 1)
+        XCTAssertEqual(r.toolCalls.first?.name, "get_weather")
+        XCTAssertEqual(r.residualContent, "")
+    }
+
+    func testTruncatedRightAfterJSONRecovered() {
+        let r = ToolCallParser.extract(
+            from: "<tool_call>{\"name\": \"lookup\", \"arguments\": {}}")
+        XCTAssertEqual(r.toolCalls.count, 1)
+        XCTAssertEqual(r.toolCalls.first?.name, "lookup")
+    }
+
+    func testTruncatedMidJSONUnrecoverable() {
+        let r = ToolCallParser.extract(from: "<tool_call>{\"name\": \"lookup\", \"argu")
+        XCTAssertTrue(r.toolCalls.isEmpty)
+    }
+}
