@@ -26,7 +26,7 @@ struct SettingsView: View {
                 storageSection
                 telemetrySection
                 aboutSection
-                // tipJarSection — hidden until post-TestFlight; StoreKit IAP + sheet code preserved
+                tipJarSection
                 footerSection
             }
             .scrollContentBackground(.hidden)
