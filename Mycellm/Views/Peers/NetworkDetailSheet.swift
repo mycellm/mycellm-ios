@@ -85,6 +85,19 @@ struct NetworkDetailSheet: View {
                     .font(.mono(10))
                     .foregroundStyle(Color.computeRed)
             }
+            if !isPublic {
+                // The id this device claims in NodeHello. For join-key
+                // networks it must equal the host's network id — surfacing it
+                // makes "why won't it authorize" diagnosable. Long-press to copy.
+                LabeledContent("Network ID") {
+                    Text(membership.id)
+                        .font(.mono(11))
+                        .foregroundStyle(Color.consoleDim)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .textSelection(.enabled)
+                }
+            }
         }
     }
 
@@ -107,6 +120,7 @@ struct NetworkDetailSheet: View {
             HStack {
                 Text("QUIC Port").font(.mono(13)).foregroundStyle(Color.consoleDim)
                 TextField("8421", text: portBinding(membership))
+                    .accessibilityIdentifier("detail.port")
                     .font(.mono(12))
                     .foregroundStyle(Color.consoleText)
                     .keyboardType(.numberPad)
@@ -132,16 +146,22 @@ struct NetworkDetailSheet: View {
 
     // MARK: - Credentials (fleet key)
 
+    @ViewBuilder
     private func credentialsSection(_ membership: NetworkMembership) -> some View {
         Section(header: Text("Fleet Key"), footer: Text("Lets a fleet admin remotely query this node and load/unload/scope its models over this network's connection. Leave blank to disable remote management on this network.").font(.mono(10))) {
             HStack {
                 Text("Admin Key").font(.mono(13)).foregroundStyle(Color.consoleDim)
-                SecureField("not set", text: fleetKeyBinding(membership))
-                    .font(.mono(12))
-                    .foregroundStyle(Color.consoleText)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .multilineTextAlignment(.trailing)
+                RevealableSecureField("not set", text: fleetKeyBinding(membership))
+                    .accessibilityIdentifier("detail.fleetKey")
+            }
+        }
+        if !isPublic {
+            Section(header: Text("Join Key"), footer: Text("Shared secret for a key-protected network — ask the host (mycellm network set-key). Sent when connecting; without it the host ignores this device on that network. Tap Reconnect to apply a change.").font(.mono(10))) {
+                HStack {
+                    Text("Join Key").font(.mono(13)).foregroundStyle(Color.consoleDim)
+                    RevealableSecureField("not set", text: joinKeyBinding(membership))
+                        .accessibilityIdentifier("detail.joinKey")
+                }
             }
         }
     }
@@ -227,12 +247,26 @@ struct NetworkDetailSheet: View {
         Binding(
             get: { isPublic ? String(preferences.quicPort) : String(membership.bootstrapPort) },
             set: { newVal in
-                let n = Int(newVal.filter(\.isNumber))
+                // Only persist a dialable port. Out-of-range input (e.g. a
+                // typo like 84211) used to persist and trap UInt16() on every
+                // launch — never store it.
+                guard let n = Int(newVal.filter(\.isNumber)),
+                      (1...65535).contains(n) else { return }
                 if isPublic {
-                    if let n { preferences.quicPort = n }
-                } else if let n {
+                    preferences.quicPort = n
+                } else {
                     updateMembership { $0.bootstrapPort = n }
                 }
+            }
+        )
+    }
+
+    private func joinKeyBinding(_ membership: NetworkMembership) -> Binding<String> {
+        Binding(
+            get: { membership.joinKey ?? "" },
+            set: { newVal in
+                let t = newVal.trimmingCharacters(in: .whitespacesAndNewlines)
+                updateMembership { $0.joinKey = t.isEmpty ? nil : t }
             }
         )
     }

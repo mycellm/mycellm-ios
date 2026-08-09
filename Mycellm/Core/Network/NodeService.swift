@@ -287,7 +287,10 @@ final class NodeService: @unchecked Sendable {
         let networkId = membership.id
         let isPublic = networkId == "public"
         let host = isPublic ? prefs.bootstrapHost : membership.bootstrapHost
-        let port = isPublic ? UInt16(prefs.quicPort) : UInt16(membership.bootstrapPort)
+        // UInt16(exactly:) — the trapping UInt16(_:) crash-looped the app at
+        // launch when a mistyped port (>65535) had been persisted.
+        let rawPort = isPublic ? prefs.quicPort : membership.bootstrapPort
+        let port = UInt16(exactly: NetworkMembership.sanitizePort(rawPort)) ?? 8421
 
         let bc = client(for: networkId)
         await bc.configure(host: host, port: port)
@@ -340,10 +343,16 @@ final class NodeService: @unchecked Sendable {
             return await weakSelf.value?.handleFleetCommand(envelope, using: handler)
         }
 
+        // Present this network's join key (if any) so a key-protected host
+        // accepts the membership claim.
+        var joinKeys: [String: String] = [:]
+        if let key = membership.joinKey, !key.isEmpty {
+            joinKeys[networkId] = key
+        }
         await bc.connect(
             peerId: peerId, capabilities: caps,
             deviceKey: deviceKey, deviceCert: deviceCert,
-            networkIds: [networkId]
+            networkIds: [networkId], joinKeys: joinKeys
         )
     }
 

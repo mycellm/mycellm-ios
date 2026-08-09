@@ -629,8 +629,8 @@ private struct APIProviderSheet: View {
 
                     formField("Name", text: $apiName, placeholder: "my-model")
                     formField("API Base URL", text: $apiBase, placeholder: "https://...")
-                    SecureField("API Key (optional)", text: $apiKey)
-                        .font(.mono(12)).padding(10)
+                    RevealableSecureField("API Key (optional)", text: $apiKey, alignment: .leading)
+                        .padding(10)
                         .background(Color.cardBackground)
                         .clipShape(RoundedRectangle(cornerRadius: 8))
                     formField("Upstream Model", text: $apiModel, placeholder: "e.g. gpt-4o")

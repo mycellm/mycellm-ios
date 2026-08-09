@@ -195,13 +195,10 @@ struct SettingsView: View {
                 Text("API Key")
                     .font(.mono(13))
                     .foregroundStyle(Color.consoleDim)
-                SecureField("optional", text: Binding(
+                RevealableSecureField("optional", text: Binding(
                     get: { preferences.remoteApiKey },
                     set: { preferences.remoteApiKey = $0 }
                 ))
-                .font(.mono(12))
-                .foregroundStyle(Color.consoleText)
-                .multilineTextAlignment(.trailing)
             }
             HStack {
                 Text("Model")

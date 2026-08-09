@@ -16,6 +16,11 @@ struct NodeHello: Sendable {
     var signature: Data = Data()
     var observedAddr: String = ""
     var networkIds: [String] = []
+    /// network_id → shared secret for key-protected networks. Outside the
+    /// signature (like network_ids); the host hmac-compares per claimed id
+    /// (py 0.6.2). Omitted from the wire when empty so pre-0.6.2 hosts see
+    /// an unchanged NodeHello.
+    var joinKeys: [String: String] = [:]
 
     init(
         peerId: String,
@@ -53,7 +58,7 @@ struct NodeHello: Sendable {
 
     func toCBOR() -> Data {
         // Key order matches Python NodeHello.to_cbor()
-        Data(encodeOrderedMap([
+        var pairs: [(String, CBOR)] = [
             ("peer_id", .utf8String(peerId)),
             ("device_pubkey", .byteString(Array(devicePubkey))),
             ("cert", .byteString(Array(cert.toCBOR()))),
@@ -63,7 +68,17 @@ struct NodeHello: Sendable {
             ("signature", .byteString(Array(signature))),
             ("observed_addr", .utf8String(observedAddr)),
             ("network_ids", .array(networkIds.map { .utf8String($0) })),
-        ]))
+        ]
+        // Python emits join_keys only when non-empty; mirror that so the
+        // encoding is byte-compatible for keyless nodes.
+        if !joinKeys.isEmpty {
+            var m: [CBOR: CBOR] = [:]
+            for (k, v) in joinKeys {
+                m[.utf8String(k)] = .utf8String(v)
+            }
+            pairs.append(("join_keys", .map(m)))
+        }
+        return Data(encodeOrderedMap(pairs))
     }
 
     static func fromCBOR(_ data: Data) throws -> NodeHello {
@@ -102,6 +117,13 @@ struct NodeHello: Sendable {
         hello.observedAddr = map[.utf8String("observed_addr")]?.stringValue ?? ""
         if case let .array(ids) = map[.utf8String("network_ids")] {
             hello.networkIds = ids.compactMap(\.stringValue)
+        }
+        if case let .map(keys) = map[.utf8String("join_keys")] {
+            for (k, v) in keys {
+                if let ks = k.stringValue, let vs = v.stringValue {
+                    hello.joinKeys[ks] = vs
+                }
+            }
         }
         return hello
     }

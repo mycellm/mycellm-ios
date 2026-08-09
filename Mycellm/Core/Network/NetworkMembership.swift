@@ -8,6 +8,10 @@ struct NetworkMembership: Identifiable, Codable, Sendable {
     var bootstrapPort: Int = 8421
     var inviteToken: String?     // Join credential (nil = already joined)
     var fleetKey: String?        // Fleet admin key (opt-in remote management)
+    /// Shared secret for a key-protected network. Presented in
+    /// NodeHello.join_keys; the host drops this network's claim without it
+    /// (py 0.6.2 FederationManager.filter_claimed_network_ids).
+    var joinKey: String?
     var joinedAt: Date = Date()
 
     // Trust & Policy
@@ -71,8 +75,16 @@ struct NetworkMembership: Identifiable, Codable, Sendable {
     /// throwing keyNotFound (which would silently drop all saved networks). The
     /// memberwise initializer is preserved by keeping this in an extension.
     private enum CodingKeys: String, CodingKey {
-        case id, name, bootstrapHost, bootstrapPort, inviteToken, fleetKey
+        case id, name, bootstrapHost, bootstrapPort, inviteToken, fleetKey, joinKey
         case joinedAt, trustLevel, creditMultiplier, policy, enabled, isConnected
+    }
+
+    /// A port outside 1...65535 would trap `UInt16(_:)` when dialing — and a
+    /// persisted one crash-loops the app at every launch (a mistyped port in
+    /// the detail sheet did exactly that). Never store or dial one.
+    static func sanitizePort(_ port: Int?) -> Int {
+        guard let port, (1...65535).contains(port) else { return 8421 }
+        return port
     }
 
     /// The public mycellm network (default membership).
@@ -92,9 +104,12 @@ extension NetworkMembership {
         id = try c.decode(String.self, forKey: .id)
         name = try c.decodeIfPresent(String.self, forKey: .name) ?? id
         bootstrapHost = try c.decodeIfPresent(String.self, forKey: .bootstrapHost) ?? ""
-        bootstrapPort = try c.decodeIfPresent(Int.self, forKey: .bootstrapPort) ?? 8421
+        // sanitize: heals installs that persisted an out-of-range port before
+        // input validation existed (those crash-looped on launch).
+        bootstrapPort = Self.sanitizePort(try c.decodeIfPresent(Int.self, forKey: .bootstrapPort))
         inviteToken = try c.decodeIfPresent(String.self, forKey: .inviteToken)
         fleetKey = try c.decodeIfPresent(String.self, forKey: .fleetKey)
+        joinKey = try c.decodeIfPresent(String.self, forKey: .joinKey)
         joinedAt = try c.decodeIfPresent(Date.self, forKey: .joinedAt) ?? Date()
         trustLevel = try c.decodeIfPresent(TrustLevel.self, forKey: .trustLevel) ?? .strict
         creditMultiplier = try c.decodeIfPresent(Double.self, forKey: .creditMultiplier) ?? 1.0
@@ -152,22 +167,33 @@ final class NetworkRegistry: @unchecked Sendable {
     #endif
 
     /// Join a new network.
+    ///
+    /// `networkId` should be the HOST's network id whenever it's known (parsed
+    /// from an invite token, or copied from the host's `mycellm network list`).
+    /// The id is what NodeHello claims and what join_keys are keyed by — a
+    /// locally-invented id can never authorize against a protected network.
+    /// Without one we fall back to a local UUID (fine for unprotected nets).
     func join(
         name: String,
         bootstrapHost: String,
         bootstrapPort: Int = 8421,
+        networkId: String? = nil,
         inviteToken: String? = nil,
         fleetKey: String? = nil,
+        joinKey: String? = nil,
         trustLevel: NetworkMembership.TrustLevel = .strict
     ) -> NetworkMembership {
-        let id = UUID().uuidString.lowercased().prefix(16).description
+        let id = networkId?.isEmpty == false
+            ? networkId!
+            : UUID().uuidString.lowercased().prefix(16).description
         let membership = NetworkMembership(
             id: id,
             name: name,
             bootstrapHost: bootstrapHost,
-            bootstrapPort: bootstrapPort,
+            bootstrapPort: NetworkMembership.sanitizePort(bootstrapPort),
             inviteToken: inviteToken,
             fleetKey: fleetKey,
+            joinKey: joinKey,
             trustLevel: trustLevel
         )
         memberships.append(membership)

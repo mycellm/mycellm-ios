@@ -56,6 +56,7 @@ actor BootstrapClient {
     /// The network ids this connection declares in its NodeHello (`network_ids`).
     /// Multi-network: each BootstrapClient advertises the network it is for.
     private var networkIds: [String] = []
+    private var joinKeys: [String: String] = [:]
     private var onStateChange: (@Sendable (ConnectionState, Transport, String?) -> Void)?
     private var onInferenceRequest: ((MessageEnvelope) async -> MessageEnvelope?)?
     private var onFleetCommand: ((MessageEnvelope) async -> MessageEnvelope?)?
@@ -93,12 +94,13 @@ actor BootstrapClient {
 
     // MARK: - Connect
 
-    func connect(peerId: String, capabilities: Capabilities, deviceKey: DeviceKey?, deviceCert: DeviceCert?, networkIds: [String] = []) async {
+    func connect(peerId: String, capabilities: Capabilities, deviceKey: DeviceKey?, deviceCert: DeviceCert?, networkIds: [String] = [], joinKeys: [String: String] = [:]) async {
         self.peerId = peerId
         self.capabilities = capabilities
         self.deviceKey = deviceKey
         self.deviceCert = deviceCert
         self.networkIds = networkIds
+        self.joinKeys = joinKeys
         keepRunning = true
         retryCount = 0
         await attemptQUIC()
@@ -163,6 +165,9 @@ actor BootstrapClient {
         // Declare which network(s) this connection joins. Python reads the
         // top-level `network_ids` field from NodeHello to scope membership.
         nodeHello.networkIds = networkIds
+        // Present join keys for protected networks — the host drops any claim
+        // whose key doesn't hmac-match (py 0.6.2 join-key enforcement).
+        nodeHello.joinKeys = joinKeys
         try? nodeHello.sign(with: dk)
         let helloBytes = nodeHello.toCBOR()
 

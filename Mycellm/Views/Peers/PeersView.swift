@@ -13,7 +13,19 @@ struct PeersView: View {
     @State private var joinPort = "8421"
     @State private var joinToken = ""
     @State private var joinFleetKey = ""
+    @State private var joinKey = ""
+    @State private var joinNetworkId = ""
     @State private var joinTrust: NetworkMembership.TrustLevel = .strict
+
+    /// Host network id parsed live from a pasted invite token (or entered
+    /// manually). Joining with the host's REAL id is what makes join-key
+    /// authorization possible; without it we fall back to a local UUID.
+    private var parsedInvite: ParsedInvite? { ParsedInvite.parse(joinToken) }
+    private var effectiveNetworkId: String? {
+        let manual = joinNetworkId.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !manual.isEmpty { return manual }
+        return parsedInvite?.networkId
+    }
 
     var body: some View {
         NavigationStack {
@@ -330,6 +342,7 @@ struct PeersView: View {
                             .font(.mono(13))
                             .foregroundStyle(Color.consoleDim)
                         TextField("My Lab Network", text: $joinName)
+                            .accessibilityIdentifier("join.name")
                             .font(.mono(13))
                             .multilineTextAlignment(.trailing)
                             .textInputAutocapitalization(.never)
@@ -339,6 +352,7 @@ struct PeersView: View {
                             .font(.mono(13))
                             .foregroundStyle(Color.consoleDim)
                         TextField("192.168.1.100", text: $joinHost)
+                            .accessibilityIdentifier("join.host")
                             .font(.mono(13))
                             .multilineTextAlignment(.trailing)
                             .textInputAutocapitalization(.never)
@@ -349,33 +363,77 @@ struct PeersView: View {
                             .font(.mono(13))
                             .foregroundStyle(Color.consoleDim)
                         TextField("8421", text: $joinPort)
+                            .accessibilityIdentifier("join.port")
                             .font(.mono(13))
                             .multilineTextAlignment(.trailing)
                             .keyboardType(.numberPad)
                     }
                 }
 
-                Section("Credentials") {
+                Section {
                     HStack {
                         Text("Invite Token")
                             .font(.mono(13))
                             .foregroundStyle(Color.consoleDim)
                         TextField("optional", text: $joinToken)
+                            .accessibilityIdentifier("join.inviteToken")
+                            .font(.mono(13))
+                            .multilineTextAlignment(.trailing)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                    }
+                    if !joinToken.isEmpty {
+                        // Live feedback: a valid invite carries the host's
+                        // network id; garbage should be obvious before Join.
+                        if let invite = parsedInvite {
+                            Label {
+                                Text("Network ID \(invite.networkId.prefix(16))…")
+                                    .font(.mono(10))
+                            } icon: {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .font(.system(size: 11))
+                            }
+                            .foregroundStyle(Color.sporeGreen)
+                        } else {
+                            Label {
+                                Text("Invite not recognized — joining with a local ID")
+                                    .font(.mono(10))
+                            } icon: {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .font(.system(size: 11))
+                            }
+                            .foregroundStyle(Color.ledgerGold)
+                        }
+                    }
+                    HStack {
+                        Text("Network ID")
+                            .font(.mono(13))
+                            .foregroundStyle(Color.consoleDim)
+                        TextField(parsedInvite?.networkId.prefix(16).description ?? "from invite / host", text: $joinNetworkId)
                             .font(.mono(13))
                             .multilineTextAlignment(.trailing)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                     }
                     HStack {
+                        Text("Join Key")
+                            .font(.mono(13))
+                            .foregroundStyle(Color.consoleDim)
+                        RevealableSecureField("optional", text: $joinKey)
+                            .accessibilityIdentifier("join.joinKey")
+                    }
+                    HStack {
                         Text("Fleet Key")
                             .font(.mono(13))
                             .foregroundStyle(Color.consoleDim)
-                        SecureField("optional", text: $joinFleetKey)
-                            .font(.mono(13))
-                            .multilineTextAlignment(.trailing)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
+                        RevealableSecureField("optional", text: $joinFleetKey)
+                            .accessibilityIdentifier("join.fleetKey")
                     }
+                } header: {
+                    Text("Credentials")
+                } footer: {
+                    Text("Paste an invite from the host (mycellm network invite) to join with the network's real ID. Join Key is required only for key-protected networks. Fleet Key opts this device into remote management.")
+                        .font(.mono(10))
                 }
 
                 Section("Trust") {
@@ -407,9 +465,11 @@ struct PeersView: View {
                         let membership = node.networkRegistry.join(
                             name: joinName,
                             bootstrapHost: joinHost,
-                            bootstrapPort: Int(joinPort) ?? 8421,
+                            bootstrapPort: NetworkMembership.sanitizePort(Int(joinPort)),
+                            networkId: effectiveNetworkId,
                             inviteToken: joinToken.isEmpty ? nil : joinToken,
                             fleetKey: joinFleetKey.isEmpty ? nil : joinFleetKey,
+                            joinKey: joinKey.isEmpty ? nil : joinKey,
                             trustLevel: joinTrust
                         )
                         // Start participating in the new network immediately.
@@ -419,6 +479,8 @@ struct PeersView: View {
                         joinHost = ""
                         joinToken = ""
                         joinFleetKey = ""
+                        joinKey = ""
+                        joinNetworkId = ""
                     }
                     .disabled(joinName.isEmpty || joinHost.isEmpty)
                 }
