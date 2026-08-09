@@ -44,7 +44,7 @@ actor HTTPServer {
         // Hummingbird, so a gate declared after the routes it guards does not
         // guard them. Only `/v1/node/**` is affected — see NodeAuth for why the
         // inference paths stay open.
-        router.middlewares.add(NodeAuthMiddleware(registry: nodeService.networkRegistry))
+        router.middlewares.add(NodeAuthMiddleware())
 
         // ── Health ──
         router.get("/health") { _, _ -> Response in

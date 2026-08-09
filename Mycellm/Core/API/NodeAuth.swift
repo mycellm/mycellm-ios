@@ -27,12 +27,10 @@ import NIOCore
 /// authenticated client (localhost, most obviously) could otherwise lock out the
 /// authenticated caller and make the node look wedged to its own watchdog.
 ///
-/// ⚠️ PLATFORM DIFFERENCE, DELIBERATE. The Python node has one `settings.api_key`.
-/// An iOS node also belongs to networks, and a network may carry a `fleetKey`
-/// described in `NetworkMembership` as the opt-in remote-management credential —
-/// so that is accepted too, and only from memberships that are enabled. A
-/// network's `joinKey` is NOT accepted: joining is not administering, and a join
-/// credential is by nature handed around.
+/// ⚠️ NO PLATFORM DIFFERENCE IN WHAT IS ACCEPTED. An iOS node also belongs to
+/// networks that carry fleet keys, and accepting those here was tempting and
+/// wrong — see `acceptedKeys()`. HTTP takes `api_key` only, same as Python.
+///
 struct NodeAuth: Sendable {
 
     /// Public in the Python sense: no key required, ever.
@@ -49,24 +47,38 @@ struct NodeAuth: Sendable {
         return protectedPrefixes.contains { path.hasPrefix($0) }
     }
 
-    /// Every credential this device is willing to be managed with.
+    /// The one credential this device is managed with — `api_key`, and nothing
+    /// else. Exact parity with the Python node, which also accepts only
+    /// `settings.api_key` on HTTP.
     ///
-    /// Read fresh per request rather than captured at boot: a user who rotates
-    /// the key in Settings expects the old one to stop working immediately, and
-    /// a fleet key added by joining a network should work without a restart.
+    /// ⚠️ THE FLEET KEY IS DELIBERATELY NOT ACCEPTED HERE, and it is worth
+    /// knowing why, because accepting it looks like the friendlier choice.
+    /// Fleet control is a *narrower* authority than HTTP management, not an
+    /// equal one: both nodes gate fleet commands behind an allowlist —
+    /// node.status, node.config, model.list/load/unload/scope (py adds
+    /// train.status) — and `_FLEET_COMMANDS` (node.py:492) and FleetHandler's
+    /// switch agree on it. The HTTP management surface has no allowlist and
+    /// includes models/delete-file, models/remove-config and every relay/*
+    /// route. Honouring a fleet key here would let a credential that cannot
+    /// unload anything destructive over QUIC delete gigabytes of weights and
+    /// re-point a relay over HTTP — the same key, silently more powerful
+    /// through the other door.
+    ///
+    /// Fleet coordination keeps its own channel: QUIC, allowlisted, relayed
+    /// through the bootstrap. Reaching a node's full management API means
+    /// holding that node's own key, exactly as it does for a Python node.
+    ///
+    /// Read fresh per request rather than captured at boot, so rotating the key
+    /// in Settings takes effect immediately.
+    ///
     /// ⚠️ READS UserDefaults DIRECTLY, NOT `Preferences.shared`. Hummingbird
     /// handlers are non-isolated and `Preferences` is @MainActor — the load
     /// handler in HTTPServer already carries this note. Hopping to the main
     /// actor to authenticate every request would also put the UI thread on the
     /// critical path of an inference API.
-    static func acceptedKeys(registry: NetworkRegistry?) -> [String] {
-        var keys: [String] = []
+    static func acceptedKeys() -> [String] {
         let local = UserDefaults.standard.string(forKey: "api_key") ?? ""
-        if !local.isEmpty { keys.append(local) }
-        for m in registry?.memberships ?? [] where m.enabled {
-            if let fleet = m.fleetKey, !fleet.isEmpty { keys.append(fleet) }
-        }
-        return keys
+        return local.isEmpty ? [] : [local]
     }
 
     /// ⚠️ NOT `==`. String equality on Swift returns as soon as two bytes differ,
@@ -152,11 +164,6 @@ struct NodeRequestContext: RemoteAddressRequestContext {
 
 /// Hummingbird middleware applying the above.
 struct NodeAuthMiddleware<Context: RemoteAddressRequestContext>: RouterMiddleware {
-    /// The registry is held, not looked up: memberships live on NodeService and
-    /// there is no global. Weak would be wrong — the middleware lives exactly as
-    /// long as the server, which lives as long as the service.
-    let registry: NetworkRegistry?
-
     func handle(_ request: Request, context: Context,
                 next: (Request, Context) async throws -> Response) async throws -> Response {
         let path = request.uri.path
@@ -165,7 +172,7 @@ struct NodeAuthMiddleware<Context: RemoteAddressRequestContext>: RouterMiddlewar
         }
 
         let ip = context.remoteAddress?.ipAddress ?? "unknown"
-        let keys = NodeAuth.acceptedKeys(registry: registry)
+        let keys = NodeAuth.acceptedKeys()
 
         // ⚠️ NO KEY SET MEANS NO REMOTE MANAGEMENT — it does NOT mean open house.
         // A fresh install has an empty api_key, and treating "unconfigured" as
