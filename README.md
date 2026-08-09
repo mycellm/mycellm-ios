@@ -69,6 +69,22 @@ open Mycellm.xcodeproj
 
 Select your device or simulator and build (⌘B). SPM dependencies (SwiftCBOR, Hummingbird, llama.swift, mlx-swift-lm, swift-transformers) resolve automatically.
 
+**Headless / CI builds need two flags:**
+
+```bash
+xcodebuild -project Mycellm.xcodeproj -scheme Mycellm \
+  -destination "generic/platform=iOS Simulator" \
+  -skipPackagePluginValidation -skipMacroValidation build
+```
+
+Without them the build fails at `Validate plug-in "CudaBuild" in package
+"mlx-swift"` — a package **plugin-trust** prompt that Xcode raises interactively
+and that has no answer on a machine with no one sitting at it. The failure is
+easy to misread: it reports three failed build commands and prints no `error:`
+line anywhere, so it looks like a broken source tree rather than a consent
+dialog nobody can click. In Xcode.app the prompt appears once and is remembered;
+over SSH it never appears at all.
+
 ### Configuration
 
 The project uses XcodeGen (`project.yml`) for reproducible project generation. Key settings:
