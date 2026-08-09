@@ -158,6 +158,23 @@ actor MLXBackend: InferenceBackend {
         isVLM = false
         kvStore.reset()
 
+        // ⚠️ MLX CANNOT RUN IN THE SIMULATOR, and it doesn't fail politely: the
+        // first call into MLX constructs a Metal device, finds the simulator's
+        // Metal doesn't provide what it needs, and calls abort(). The whole app
+        // dies with SIGABRT inside mlx::core::metal::Device::Device(), before any
+        // Swift error can be thrown — so from the outside it looks like loading
+        // an MLX model crashes the app rather than "this build can't do that".
+        //
+        // Fail as a normal load error instead. Costs nothing on device (the
+        // branch is compiled out) and makes the whole non-inference surface —
+        // downloads, scanning, the model picker — testable in a simulator.
+        #if targetEnvironment(simulator)
+        throw MycellmError.inferenceError(
+            "MLX models need a physical device — the iOS Simulator has no Metal GPU that MLX can use. "
+            + "GGUF models run fine here."
+        )
+        #else
+
         let modelURL = URL(filePath: path)
 
         // Check available memory vs model size
@@ -204,6 +221,7 @@ actor MLXBackend: InferenceBackend {
         // MLX doesn't expose a load-time context budget like llama.cpp's
         // n_ctx — the max tokens are bounded by the model's config and
         // the prompt-fit logic in complete()/stream().
+        #endif
     }
 
     func unloadModel() {

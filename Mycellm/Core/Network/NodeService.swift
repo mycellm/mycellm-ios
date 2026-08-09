@@ -136,6 +136,9 @@ final class NodeService: @unchecked Sendable {
     @MainActor
     init() {
         loadOrCreateIdentity()
+        // A model can now arrive without the UI being involved (HTTP download),
+        // so the manager has to be told to look again.
+        modelDownloader.onModelsChanged = { [modelManager] in modelManager.scanLocalModels() }
         networkMode = Preferences.shared.networkMode
         // Load the last tracker-reconciled balance so it survives restart
         // instead of resetting to the seed; reconcileTrackerCredits() refreshes

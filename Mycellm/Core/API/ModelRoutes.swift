@@ -61,19 +61,39 @@ enum ModelRoutes {
         let name: String
         let filename: String
         let downloads: Int
-        let hasQ4: Bool
+        let usable: Bool
+        let format: String
 
         var dict: [String: Any] {
-            ["repo_id": repoId, "name": name, "filename": filename, "downloads": downloads, "has_q4": hasQ4]
+            [
+                "repo_id": repoId, "name": name, "filename": filename,
+                "downloads": downloads, "format": format, "usable": usable,
+                // Kept so older clients keep working; for MLX it means the same
+                // thing the name implies — a quantised, downloadable model.
+                "has_q4": usable,
+            ]
         }
     }
 
-    /// Search HuggingFace for GGUF models.
-    /// The search endpoint doesn't return file listings, so we fetch details for top results.
-    static func searchHuggingFace(query: String) async -> [[String: Any]] {
-        let searchQuery = query.isEmpty ? "gguf" : "\(query) gguf"
+    /// Search HuggingFace for models this node can actually run.
+    ///
+    /// ⚠️ DEFAULTS TO MLX, and that is a behaviour change worth understanding.
+    /// This used to hardcode `filter=gguf` and append " gguf" to every query, so
+    /// MLX models were not merely deprioritised — they were unreachable through
+    /// search, on a device where MLX is the faster backend (Metal, no GGUF
+    /// dequantisation step). Passing `format=gguf` restores the old behaviour
+    /// exactly; llama.cpp remains fully supported and is still the right choice
+    /// for a quant MLX doesn't publish.
+    ///
+    /// The search endpoint doesn't return file listings, so details are fetched
+    /// for the top results to find out whether a repo actually contains weights
+    /// we can use.
+    static func searchHuggingFace(query: String, format: String = "mlx") async -> [[String: Any]] {
+        let wantsMLX = format.lowercased() != "gguf"
+        let tag = wantsMLX ? "mlx" : "gguf"
+        let searchQuery = query.isEmpty ? tag : "\(query) \(tag)"
         guard let encoded = searchQuery.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
-              let url = URL(string: "https://huggingface.co/api/models?search=\(encoded)&filter=gguf&sort=downloads&direction=-1&limit=20") else {
+              let url = URL(string: "https://huggingface.co/api/models?search=\(encoded)&filter=\(tag)&sort=downloads&direction=-1&limit=20") else {
             return []
         }
 
@@ -89,19 +109,35 @@ enum ModelRoutes {
 
                     group.addTask {
                         guard let detailURL = URL(string: "https://huggingface.co/api/models/\(modelId)") else {
-                            return SearchResult(repoId: modelId, name: name, filename: "", downloads: downloads, hasQ4: false)
+                            return SearchResult(repoId: modelId, name: name, filename: "",
+                                                downloads: downloads, usable: false, format: tag)
                         }
 
-                        var ggufFiles: [String] = []
+                        var siblings: [String] = []
                         if let (detailData, _) = try? await URLSession.shared.data(from: detailURL),
                            let detail = try? JSONSerialization.jsonObject(with: detailData) as? [String: Any] {
-                            let siblings = detail["siblings"] as? [[String: Any]] ?? []
-                            ggufFiles = siblings
+                            siblings = (detail["siblings"] as? [[String: Any]] ?? [])
                                 .compactMap { $0["rfilename"] as? String }
-                                .filter { $0.hasSuffix(".gguf") && ($0.contains("Q4_K_M") || $0.contains("q4_k_m")) }
                         }
 
-                        return SearchResult(repoId: modelId, name: name, filename: ggufFiles.first ?? "", downloads: downloads, hasQ4: !ggufFiles.isEmpty)
+                        if wantsMLX {
+                            // ⚠️ NO FILENAME FOR MLX — the model IS the repo.
+                            // A caller that treats this like the GGUF case and
+                            // downloads one .safetensors gets a shard, not a
+                            // model. `filename` stays empty deliberately so that
+                            // mistake can't be made silently; the download
+                            // endpoint takes the repo id.
+                            let hasWeights = siblings.contains { $0.hasSuffix(".safetensors") }
+                                && siblings.contains { $0 == "config.json" }
+                            return SearchResult(repoId: modelId, name: name, filename: "",
+                                                downloads: downloads, usable: hasWeights, format: "mlx")
+                        }
+
+                        let ggufFiles = siblings.filter {
+                            $0.hasSuffix(".gguf") && ($0.contains("Q4_K_M") || $0.contains("q4_k_m"))
+                        }
+                        return SearchResult(repoId: modelId, name: name, filename: ggufFiles.first ?? "",
+                                            downloads: downloads, usable: !ggufFiles.isEmpty, format: "gguf")
                     }
                 }
 
@@ -109,7 +145,11 @@ enum ModelRoutes {
                 for await result in group {
                     if let r = result { collected.append(r) }
                 }
-                return collected.sorted { $0.downloads > $1.downloads }
+                // Repos we can't use sink below ones we can — a search that
+                // leads with undownloadable results reads as a broken search.
+                return collected.sorted {
+                    $0.usable == $1.usable ? $0.downloads > $1.downloads : $0.usable
+                }
             }
 
             return results.map(\.dict)

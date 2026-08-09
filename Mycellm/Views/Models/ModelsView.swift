@@ -164,9 +164,46 @@ struct ModelsView: View {
                 downloadRow(dl)
             }
 
+            // MLX repos in flight
+            ForEach(downloader.repoDownloads.filter { $0.state == .downloading || $0.state == .pending }) { dl in
+                repoDownloadRow(dl)
+            }
+
             // Failed/cancelled
             ForEach(downloader.activeDownloads.filter { $0.state == .failed || $0.state == .cancelled }) { dl in
                 failedDownloadRow(dl)
+            }
+
+            ForEach(downloader.repoDownloads.filter { $0.state == .failed || $0.state == .cancelled }) { dl in
+                HStack {
+                    Image(systemName: "exclamationmark.triangle").foregroundStyle(Color.computeRed)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(dl.name).font(.mono(11)).foregroundStyle(Color.consoleText).lineLimit(1)
+                        // The reason matters here more than for a single file:
+                        // "not enough space" and "gated repo" need different
+                        // actions from the user, and both are common.
+                        if let err = dl.error {
+                            Text(err).font(.mono(9)).foregroundStyle(Color.consoleDim).lineLimit(3)
+                        }
+                    }
+                    Spacer()
+                    Button("Dismiss") { downloader.removeRepoDownload(id: dl.id) }
+                        .font(.mono(10)).foregroundStyle(Color.relayBlue)
+                }
+                .padding(10)
+                .background(Color.computeRed.opacity(0.1))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+            }
+            .onChange(of: downloader.repoDownloads.filter({ $0.state == .completed }).count) { _, newCount in
+                if newCount > 0 {
+                    for dl in downloader.repoDownloads where dl.state == .completed {
+                        downloader.removeRepoDownload(id: dl.id)
+                    }
+                    // The directory only becomes visible to the picker once the
+                    // atomic publish has happened, so rescanning here is what
+                    // makes a finished MLX model appear.
+                    modelManager.scanLocalModels()
+                }
             }
             .onChange(of: downloader.activeDownloads.filter({ $0.state == .completed }).count) { _, newCount in
                 if newCount > 0 {
@@ -327,6 +364,40 @@ struct ModelsView: View {
         .clipShape(RoundedRectangle(cornerRadius: 10))
     }
 
+    private func repoDownloadRow(_ dl: ModelDownloader.RepoDownload) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(dl.name).font(.mono(11, weight: .medium))
+                    .foregroundStyle(Color.consoleText).lineLimit(1)
+                Text("MLX").font(.mono(8, weight: .medium))
+                    .padding(.horizontal, 4).padding(.vertical, 1)
+                    .background(Color.relayBlue.opacity(0.2))
+                    .foregroundStyle(Color.relayBlue)
+                    .clipShape(RoundedRectangle(cornerRadius: 3))
+                Spacer()
+                Button {
+                    downloader.cancelRepo(id: dl.id)
+                } label: {
+                    Image(systemName: "xmark.circle.fill").foregroundStyle(Color.consoleDim)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Cancel download")
+            }
+            ProgressView(value: dl.progress).tint(Color.relayBlue)
+            HStack {
+                Text(dl.progressDescription).font(.mono(9)).foregroundStyle(Color.consoleDim)
+                Spacer()
+                if !dl.speedDescription.isEmpty {
+                    Text("\(dl.speedDescription) · \(dl.etaDescription)")
+                        .font(.mono(9)).foregroundStyle(Color.consoleDim)
+                }
+            }
+        }
+        .padding(10)
+        .background(Color.cardBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
     private func failedDownloadRow(_ dl: ModelDownloader.Download) -> some View {
         HStack {
             Image(systemName: dl.state == .failed ? "exclamationmark.triangle.fill" : "xmark.circle")
@@ -456,6 +527,9 @@ private struct HuggingFaceSheet: View {
     @State private var searchText = ""
     @State private var searchResults: [[String: Any]] = []
     @State private var isSearching = false
+    /// MLX first: it's the faster backend on Apple silicon, and until now search
+    /// couldn't reach it at all. GGUF stays one tap away for quants MLX lacks.
+    @State private var searchFormat = "mlx"
 
     var body: some View {
         NavigationStack {
@@ -465,7 +539,7 @@ private struct HuggingFaceSheet: View {
                     HStack {
                         Image(systemName: "magnifyingglass")
                             .foregroundStyle(Color.consoleDim)
-                        TextField("Search GGUF models...", text: $searchText)
+                        TextField(searchFormat == "mlx" ? "Search MLX models..." : "Search GGUF models...", text: $searchText)
                             .font(.mono(13))
                             .foregroundStyle(Color.consoleText)
                             .textInputAutocapitalization(.never)
@@ -487,6 +561,20 @@ private struct HuggingFaceSheet: View {
                     .background(Color.cardBackground)
                     .clipShape(RoundedRectangle(cornerRadius: 10))
                     .padding(.horizontal)
+
+                    Picker("Format", selection: $searchFormat) {
+                        Text("MLX").tag("mlx")
+                        Text("GGUF").tag("gguf")
+                    }
+                    .pickerStyle(.segmented)
+                    .padding(.horizontal)
+                    .onChange(of: searchFormat) { _, _ in
+                        // Results from the other format are meaningless here —
+                        // different repos, and for MLX a row has no filename at
+                        // all. Clear rather than show stale rows.
+                        searchResults = []
+                        if !searchText.isEmpty { search() }
+                    }
 
                     // Results
                     ForEach(Array(searchResults.enumerated()), id: \.offset) { _, result in
@@ -518,7 +606,7 @@ private struct HuggingFaceSheet: View {
         guard !searchText.isEmpty else { return }
         isSearching = true
         Task {
-            searchResults = await ModelRoutes.searchHuggingFace(query: searchText)
+            searchResults = await ModelRoutes.searchHuggingFace(query: searchText, format: searchFormat)
             isSearching = false
         }
     }
@@ -528,7 +616,8 @@ private struct HuggingFaceSheet: View {
         let repoId = result["repo_id"] as? String ?? ""
         let filename = result["filename"] as? String ?? ""
         let downloads = result["downloads"] as? Int ?? 0
-        let hasQ4 = result["has_q4"] as? Bool ?? false
+        let usable = (result["usable"] as? Bool) ?? (result["has_q4"] as? Bool ?? false)
+        let isMLX = (result["format"] as? String ?? "gguf") == "mlx"
 
         return HStack {
             VStack(alignment: .leading, spacing: 2) {
@@ -545,17 +634,25 @@ private struct HuggingFaceSheet: View {
                 }
             }
             Spacer()
-            if hasQ4 && !filename.isEmpty {
-                if modelManager.localFiles.contains(where: { $0.filename == filename }) {
-                    Text("Downloaded").font(.mono(10)).foregroundStyle(Color.sporeGreen)
-                } else {
-                    Button("Download") {
-                        downloader.download(repoId: repoId, filename: filename)
+            if usable {
+                // For MLX the model is the whole repo, so the thing that lands
+                // on disk is a directory named after it — not `filename`, which
+                // is deliberately empty for MLX.
+                downloadControl(
+                    localName: isMLX ? MLXRepo.directoryName(for: repoId) : filename,
+                    action: {
+                        if isMLX {
+                            downloader.downloadRepo(repoId: repoId)
+                        } else {
+                            downloader.download(repoId: repoId, filename: filename)
+                        }
                     }
-                    .font(.mono(11, weight: .medium)).foregroundStyle(Color.relayBlue)
-                }
+                )
             } else {
-                Text("No Q4_K_M").font(.mono(9)).foregroundStyle(Color.consoleDim)
+                Image(systemName: "slash.circle")
+                    .font(.system(size: 15))
+                    .foregroundStyle(Color.consoleDim)
+                    .accessibilityLabel(isMLX ? "No MLX weights in this repo" : "No Q4_K_M build available")
             }
         }
         .padding(10)
@@ -575,18 +672,47 @@ private struct HuggingFaceSheet: View {
                 Text(String(format: "%.1f GB", sizeGb)).font(.mono(10)).foregroundStyle(Color.consoleDim)
             }
             Spacer()
-            if modelManager.localFiles.contains(where: { $0.filename == filename }) {
-                Text("Downloaded").font(.mono(10)).foregroundStyle(Color.sporeGreen)
-            } else {
-                Button("Download") {
-                    downloader.download(repoId: repoId, filename: filename)
-                }
-                .font(.mono(11, weight: .medium)).foregroundStyle(Color.relayBlue)
+            downloadControl(localName: filename) {
+                downloader.download(repoId: repoId, filename: filename)
             }
         }
         .padding(10)
         .background(Color.cardBackground)
         .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    /// Download / downloading / downloaded, as one icon.
+    ///
+    /// ⚠️ EVERY STATE CARRIES AN ACCESSIBILITY LABEL. Replacing the words
+    /// "Download" and "Downloaded" with glyphs is fine visually and silent to
+    /// VoiceOver — an unlabelled `Image` in a `Button` is announced as nothing
+    /// useful, so the row becomes unusable rather than merely terser.
+    @ViewBuilder
+    private func downloadControl(localName: String, action: @escaping () -> Void) -> some View {
+        let inFlight = downloader.repoDownloads.first {
+            $0.name == localName && ($0.state == .downloading || $0.state == .pending)
+        }
+        if modelManager.localFiles.contains(where: { $0.filename == localName }) {
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 15))
+                .foregroundStyle(Color.sporeGreen)
+                .accessibilityLabel("Downloaded")
+        } else if let inFlight {
+            // Percentage rather than an indeterminate spinner: these run for
+            // minutes and a spinner can't tell "working" from "stuck".
+            Text("\(Int(inFlight.progress * 100))%")
+                .font(.mono(10))
+                .foregroundStyle(Color.relayBlue)
+                .accessibilityLabel("Downloading, \(Int(inFlight.progress * 100)) percent")
+        } else {
+            Button(action: action) {
+                Image(systemName: "arrow.down.circle")
+                    .font(.system(size: 17))
+                    .foregroundStyle(Color.relayBlue)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Download")
+        }
     }
 
     private func formatCount(_ n: Int) -> String {

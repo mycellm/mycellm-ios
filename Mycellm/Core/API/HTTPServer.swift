@@ -200,8 +200,108 @@ actor HTTPServer {
 
         router.get("/v1/node/models/search") { request, _ -> Response in
             let query = request.uri.queryParameters.get("q") ?? ""
-            let results = await ModelRoutes.searchHuggingFace(query: query)
+            let format = request.uri.queryParameters.get("format").map { String($0) } ?? "mlx"
+            let results = await ModelRoutes.searchHuggingFace(query: query, format: format)
             return try Self.json(results)
+        }
+
+        // ── Downloads ──
+        //
+        // Node parity: the Python node can fetch a model it doesn't have, and
+        // until now an iOS node could not — every model had to arrive through
+        // the UI (GGUF) or the Files app (MLX). That made an iOS node something
+        // you had to walk over to, which is the opposite of what a node is.
+
+        router.post("/v1/node/models/download") { request, _ -> Response in
+            let body = try await Self.parseBody(request)
+            guard let repoId = body["repo_id"] as? String, !repoId.isEmpty else {
+                return try Self.error("repo_id required")
+            }
+
+            // Explicit `format` wins; otherwise a filename means the caller has
+            // picked one GGUF file out of a repo, and no filename means take the
+            // repo as a model — which is what MLX is.
+            let filename = body["filename"] as? String
+            let format = (body["format"] as? String)
+                ?? (filename?.isEmpty == false ? "gguf" : "mlx")
+
+            if format == "gguf" {
+                guard let filename, !filename.isEmpty else {
+                    return try Self.error("filename required for gguf downloads")
+                }
+                await MainActor.run {
+                    nodeService.modelDownloader.download(repoId: repoId, filename: filename)
+                }
+                return try Self.json([
+                    "status": "downloading", "repo_id": repoId,
+                    "filename": filename, "format": "gguf",
+                ])
+            }
+
+            // Resolve the plan up front so a bad repo, a non-MLX repo or a
+            // device that hasn't the space fails HERE, with a reason the caller
+            // can act on — rather than as a background task that silently ends
+            // in .failed and has to be discovered by polling.
+            do {
+                let assets = try await MLXRepo.plan(repoId: repoId)
+                let total = assets.reduce(Int64(0)) { $0 + $1.size }
+                let free = MLXRepo.freeBytes()
+                guard free > total + 500 * 1024 * 1024 else {
+                    return try Self.error(MLXRepo.Failure
+                        .insufficientSpace(needed: total, free: free).localizedDescription)
+                }
+                let name = body["name"] as? String
+                let id = await MainActor.run {
+                    nodeService.modelDownloader.downloadRepo(repoId: repoId, name: name)
+                }
+                return try Self.json([
+                    "status": "downloading",
+                    "download_id": id.uuidString,
+                    "repo_id": repoId,
+                    "name": name ?? MLXRepo.directoryName(for: repoId),
+                    "format": "mlx",
+                    "files": assets.count,
+                    "total_bytes": total,
+                ])
+            } catch {
+                return try Self.error(error.localizedDescription)
+            }
+        }
+
+        router.get("/v1/node/models/downloads") { _, _ -> Response in
+            let (files, repos) = await MainActor.run {
+                (nodeService.modelDownloader.activeDownloads,
+                 nodeService.modelDownloader.repoDownloads)
+            }
+            return try Self.json([
+                "downloads": files.map { d in
+                    [
+                        "repo_id": d.repoId, "filename": d.filename, "format": "gguf",
+                        "state": d.state.rawValue.lowercased(), "progress": d.progress,
+                        "bytes_downloaded": d.bytesDownloaded, "total_bytes": d.totalBytes,
+                        "bytes_per_second": d.bytesPerSecond,
+                    ] as [String: Any]
+                },
+                "repo_downloads": repos.map { d in
+                    [
+                        "download_id": d.id.uuidString, "repo_id": d.repoId,
+                        "name": d.name, "format": "mlx",
+                        "state": d.state.rawValue.lowercased(), "progress": d.progress,
+                        "bytes_downloaded": d.bytesDownloaded, "total_bytes": d.totalBytes,
+                        "bytes_per_second": d.bytesPerSecond,
+                        "error": d.error ?? "",
+                    ] as [String: Any]
+                },
+            ])
+        }
+
+        router.post("/v1/node/models/download/cancel") { request, _ -> Response in
+            let body = try await Self.parseBody(request)
+            guard let idString = body["download_id"] as? String, let id = UUID(uuidString: idString) else {
+                return try Self.error("download_id required")
+            }
+            await MainActor.run { nodeService.modelDownloader.cancelRepo(id: id) }
+            return try Self.json(["status": "cancelled", "download_id": idString])
         }
 
         // ── Model Management ──
@@ -215,6 +315,10 @@ actor HTTPServer {
                     "size_bytes": f.sizeBytes,
                     "size_gb": Double(f.sizeBytes) / 1_073_741_824.0,
                     "loaded": f.isLoaded,
+                    // A caller choosing what to load needs this: an MLX entry is
+                    // a directory, a GGUF entry a file, and they aren't
+                    // interchangeable in a load request.
+                    "format": f.format,
                 ]
             }
             return try Self.json(["model_dir": ModelManager.modelsDirectory.path, "files": files])
@@ -262,7 +366,14 @@ actor HTTPServer {
                     return try Self.error("Model file not found: \(filename)")
                 }
                 Task { try? await mm.loadModel(file: file, scope: scope) }
-                return try Self.json(["status": "loading", "model": file.filename, "backend": "llama.cpp"])
+                // ⚠️ REPORT THE FORMAT WE ACTUALLY DETECTED. `backend` defaults
+                // to "llama.cpp" for back-compat, but ModelManager.loadModel
+                // dispatches on ModelFormat.detect(path:) regardless — so an MLX
+                // directory loads correctly and used to be reported as
+                // llama.cpp, telling every caller the node was running a backend
+                // it wasn't. The load path needed no MLX branch; the answer did.
+                let detected = ModelFormat.detect(path: file.path) == .mlx ? "mlx" : "llama.cpp"
+                return try Self.json(["status": "loading", "model": file.filename, "backend": detected])
             }
         }
 
