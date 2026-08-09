@@ -1,0 +1,10 @@
+[
+  "tests/e2e/test_public_api.py::TestPublicApi::test_capabilities_includes_supports_thinking",
+  "tests/e2e/test_public_api.py::TestPublicApi::test_chat_finish_reason_stop_when_no_tools",
+  "tests/e2e/test_public_api.py::TestPublicApi::test_chat_reports_token_usage",
+  "tests/e2e/test_public_api.py::TestPublicApi::test_chat_with_reasoning_exclude_returns_clean_content",
+  "tests/e2e/test_public_api.py::TestPublicApi::test_chat_without_reasoning_field_also_clean",
+  "tests/e2e/test_public_api.py::TestPublicApi::test_models_endpoint_returns_auto",
+  "tests/e2e/test_public_api.py::TestPublicApi::test_public_stats_growth_history_has_request_data",
+  "tests/e2e/test_public_api.py::TestPublicApi::test_public_stats_top_contributors_populated"
+]

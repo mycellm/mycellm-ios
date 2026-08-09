@@ -32,8 +32,3 @@ Package.resolved
 
 # Models (large binary files)
 *.gguf
-
-# Python (tests/e2e pytest)
-__pycache__/
-*.pyc
-.pytest_cache/

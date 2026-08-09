@@ -38,7 +38,13 @@ actor HTTPServer {
         guard case .stopped = state else { return }
         state = .starting
 
-        let router = Router()
+        let router = Router(context: NodeRequestContext.self)
+
+        // ⚠️ ADDED BEFORE ANY ROUTE. Middleware order is registration order in
+        // Hummingbird, so a gate declared after the routes it guards does not
+        // guard them. Only `/v1/node/**` is affected — see NodeAuth for why the
+        // inference paths stay open.
+        router.middlewares.add(NodeAuthMiddleware(registry: nodeService.networkRegistry))
 
         // ── Health ──
         router.get("/health") { _, _ -> Response in
