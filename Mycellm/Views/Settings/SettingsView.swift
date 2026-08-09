@@ -10,6 +10,9 @@ struct SettingsView: View {
     @State private var showingTipJar = false
     @State private var safariURL: URL?
     @State private var tipJar = TipJarManager()
+    // Tab selection lives in @AppStorage so any view can navigate — MainTabView
+    // owns the TabView, ChatView already jumps to Models this way.
+    @AppStorage("lastSelectedTab") private var selectedTab = 1
 
     var body: some View {
         NavigationStack {
@@ -110,14 +113,23 @@ struct SettingsView: View {
     // detail sheet. Settings keeps only a pointer so there's one home per thing.
     private var networkSection: some View {
         Section(header: Text("Network"), footer: Text("Manage networks — bootstrap endpoint, fleet key, sharing, trust, and enable/disable — on each network's card in the Network tab.").font(.mono(10))) {
-            LabeledContent {
-                Image(systemName: "arrow.right")
-                    .font(.system(size: 12))
-                    .foregroundStyle(Color.consoleDim)
+            // ⚠️ IT LOOKED TAPPABLE AND WASN'T. A row with a trailing arrow is a
+            // promise of navigation; this one was a LabeledContent that did
+            // nothing, so the only way to discover the Network tab was to guess.
+            // Same idiom ChatView already uses to reach the Models tab — the tab
+            // selection is @AppStorage, so setting it IS the navigation.
+            Button {
+                selectedTab = 3          // Network — see MainTabView tags
             } label: {
-                Label("Manage in Network tab", systemImage: "globe")
-                    .font(.mono(13))
-                    .foregroundStyle(Color.consoleText)
+                HStack {
+                    Label("Manage in Network tab", systemImage: "globe")
+                        .font(.mono(13))
+                        .foregroundStyle(Color.consoleText)
+                    Spacer()
+                    Image(systemName: "arrow.right")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Color.consoleDim)
+                }
             }
         }
     }
@@ -371,6 +383,13 @@ struct SettingsView: View {
         .sheet(isPresented: $showingTipJar) {
             TipJarSheet(tipJar: tipJar)
                 .presentationDetents([.medium])
+                // ⚠️ The section's own .task already fetches on Settings appear;
+                // this is the belt to that braces. `loadProducts` guards on
+                // `products.isEmpty`, so the second call is free — and without it
+                // a sheet opened before the first fetch returns shows the tiers
+                // with "—" where the prices belong, which looks broken rather
+                // than pending.
+                .task { await tipJar.loadProducts() }
         }
     }
 
@@ -495,15 +514,33 @@ private struct TipJarSheet: View {
                                         .font(.mono(13))
                                         .foregroundStyle(Color.consoleText)
                                     Spacer()
-                                    Text(product.displayPrice)
-                                        .font(.mono(12, weight: .medium))
-                                        .foregroundStyle(Color.sporeGreen)
+                                    // ⚠️ THE TAP HAD NO VISIBLE EFFECT. StoreKit takes a
+                                    // second or two to raise Apple's payment sheet, and in
+                                    // that gap the only feedback was the row quietly
+                                    // disabling — which reads as "the button is broken",
+                                    // not as "it is working". The spinner replaces the
+                                    // price on the row that was actually tapped, so the
+                                    // feedback is where the finger is.
+                                    if tipJar.purchasingProductId == product.id {
+                                        ProgressView()
+                                            .controlSize(.small)
+                                            .tint(Color.sporeGreen)
+                                    } else {
+                                        Text(product.displayPrice)
+                                            .font(.mono(12, weight: .medium))
+                                            .foregroundStyle(Color.sporeGreen)
+                                    }
                                 }
                             }
                             .disabled(tipJar.purchaseState.isPurchasing)
                         }
                     }
 
+                    if tipJar.purchaseState.isPurchasing {
+                        Text("Contacting the App Store…")
+                            .font(.mono(10))
+                            .foregroundStyle(Color.consoleDim)
+                    }
                     if case .success = tipJar.purchaseState {
                         HStack {
                             Image(systemName: "heart.fill").foregroundStyle(Color.computeRed)

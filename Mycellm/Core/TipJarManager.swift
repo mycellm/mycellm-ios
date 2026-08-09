@@ -7,6 +7,9 @@ final class TipJarManager: @unchecked Sendable {
     private(set) var products: [Product] = []
     private(set) var isLoading = false
     private(set) var purchaseState: PurchaseState = .idle
+    /// Which tier is mid-purchase, so the sheet can put the spinner on the row
+    /// the user actually tapped rather than on all of them.
+    private(set) var purchasingProductId: String?
     private(set) var error: String?
 
     enum PurchaseState: Sendable {
@@ -56,6 +59,11 @@ final class TipJarManager: @unchecked Sendable {
     /// Purchase a tip.
     func purchase(_ product: Product) async {
         purchaseState = .purchasing
+        purchasingProductId = product.id
+        // ⚠️ Cleared on EVERY exit, including cancel and throw. StoreKit's sheet
+        // takes a moment to appear and a user who dismisses it leaves this set —
+        // a spinner that never stops is worse than the delay it was hiding.
+        defer { purchasingProductId = nil }
         do {
             let result = try await product.purchase()
             switch result {
