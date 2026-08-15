@@ -33,11 +33,18 @@ enum NetworkConfig {
     /// Single source of truth: SettingsView, HealthRoute, BootstrapClient,
     /// NodeService (peer hello), and Capabilities all read this. Bump when
     /// upstream Python mycellm cuts a release that changes the wire
-    /// protocol or the OpenAI-API surface that iOS mirrors.
+    /// protocol or the OpenAI-API surface that iOS mirrors — and on a security
+    /// fix shipped on both platforms, so an operator can tell a patched node
+    /// from an unpatched one. That second reason is why this reads 0.7.1: the
+    /// path-containment fix changes no wire format, but without the bump a
+    /// patched build and a vulnerable one report the same version and the
+    /// fleet cannot be audited from `/v1/node/status` alone.
+    ///
+    /// 0.7.1 = download destinations contained inside the models directory.
     /// 0.7.0 = leaf-node parity core (node management surface, /v1/embeddings,
     /// Prometheus /metrics, activity + log SSE, URL and MLX-manifest installs
     /// with per-file digest verification) — released fleet-wide 2026-08-15.
     /// Supersedes 0.6.3, the hardening-era core (stop-holdback, download
     /// verification, exact usage, context_length, bounded KV).
-    static let version = "0.7.0"
+    static let version = "0.7.1"
 }

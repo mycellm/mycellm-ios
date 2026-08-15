@@ -9,7 +9,7 @@ version of the Python [mycellm](https://github.com/mycellm/mycellm) core whose
 protocol and API surface this build matches. A release can bump one without the
 other.
 
-## [1.2.0] — 2026-08-15 · build 29 · core parity 0.7.0
+## [1.2.0] — 2026-08-15 · build 30 · core parity 0.7.1
 
 **Leaf-node API parity, plus the two things real hardware exposed.** A dashboard
 or fleet tool pointed at an iOS node now manages it the same way it manages a
@@ -45,6 +45,32 @@ could have shown.
   bootstrap is normal rather than a fault to hunt for.
 - **Settings → Privacy Guard → Rules showed two disclosure chevrons.**
   `NavigationLink` draws its own; the label added another.
+
+### Security
+
+- **A download can no longer write outside the models directory.** The
+  destination was built as `modelsDirectory.appendingPathComponent(filename)`
+  and publishing does `removeItem` *before* `moveItem` — so a `filename` that
+  walked out of the directory did not merely write in the wrong place, it
+  **deleted** whatever it landed on first. The Hugging Face branch validated
+  only that the name was non-empty; the URL branch rejected a `/`, which let
+  `.` and `..` through, since neither contains one.
+
+  Containment is now enforced at the downloader, not only at the routes, so a
+  future caller that bypasses a route cannot reintroduce it. A repo
+  subdirectory stays legal and is reduced to its last component. The same flaw
+  was present in the Python core and is fixed there in 0.7.1.
+
+  Reachable only with the node management key, and found by running the API
+  against real devices — the unit suite was green throughout because nothing
+  asserted on it. It does now.
+
+- **Every download is addressable, so every download can be cancelled.**
+  `/v1/node/models/downloads` reported `download_id` only for MLX repo
+  downloads, and `downloads/abort` accepts nothing else — so a GGUF download,
+  including every URL install, could be started through the API and never
+  stopped through it. Both start responses now return `download_id`, the
+  listing carries it, and abort resolves against both collections.
 
 ### Changed
 

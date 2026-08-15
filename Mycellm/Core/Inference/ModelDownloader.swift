@@ -255,8 +255,12 @@ final class ModelDownloader: NSObject, @unchecked Sendable, URLSessionDownloadDe
     /// Fetch a model from an arbitrary URL, verified against a caller-supplied
     /// digest. For models that aren't on Hugging Face — an internal mirror, a
     /// private build — coordinated by whoever holds the node's management key.
-    func download(url urlString: String, filename: String, sha256: String, allowExpensive: Bool = false) {
-        guard let url = URL(string: urlString) else { return }
+    /// Returns the download's id so the caller can abort it. A file download
+    /// that cannot be addressed cannot be cancelled — see `cancelDownload`.
+    @discardableResult
+    func download(url urlString: String, filename: String, sha256: String,
+                  allowExpensive: Bool = false) -> UUID? {
+        guard let url = URL(string: urlString) else { return nil }
 
         var dl = Download(repoId: url.host ?? "url", filename: filename)
         dl.origin = .url(urlString, sha256: sha256.lowercased())
@@ -269,6 +273,7 @@ final class ModelDownloader: NSObject, @unchecked Sendable, URLSessionDownloadDe
         tasks[task.taskIdentifier] = dl.id
         activeDownloads.append(dl)
         task.resume()
+        return dl.id
     }
 
     /// Start downloading a GGUF file from HuggingFace.
@@ -277,9 +282,10 @@ final class ModelDownloader: NSObject, @unchecked Sendable, URLSessionDownloadDe
     /// standing preference is consulted by `DownloadPolicy` either way. The
     /// request carries the decision so URLSession enforces it even if a caller
     /// skipped the pre-check.
-    func download(repoId: String, filename: String, allowExpensive: Bool = false) {
+    @discardableResult
+    func download(repoId: String, filename: String, allowExpensive: Bool = false) -> UUID? {
         let urlString = "https://huggingface.co/\(repoId)/resolve/main/\(filename)"
-        guard let url = URL(string: urlString) else { return }
+        guard let url = URL(string: urlString) else { return nil }
 
         var dl = Download(repoId: repoId, filename: filename)
         dl.state = .downloading
@@ -292,6 +298,28 @@ final class ModelDownloader: NSObject, @unchecked Sendable, URLSessionDownloadDe
         activeDownloads.append(dl)
 
         task.resume()
+        return dl.id
+    }
+
+    /// The name a download is allowed to write, or nil if it isn't safe.
+    ///
+    /// ⚠️ THIS IS THE LAST LINE, NOT THE FIRST. The destination is built as
+    /// `modelsDirectory.appendingPathComponent(filename)` and the publish step
+    /// does `removeItem` before `moveItem` — so a `filename` that walks out of
+    /// the models directory does not merely write in the wrong place, it
+    /// *deletes* whatever it lands on first. The routes validate too, for a
+    /// clean 400, but the check has to exist here or a future caller that skips
+    /// the route reintroduces it.
+    ///
+    /// A Hugging Face `filename` may legitimately name a file inside a repo
+    /// subdirectory, so the fetch keeps the full path and only the destination
+    /// is reduced to its last component.
+    static func safeDestinationName(_ filename: String) -> String? {
+        let base = (filename as NSString).lastPathComponent
+        guard !base.isEmpty, base != ".", base != "..",
+              !base.contains("/"), !base.contains(".."), !base.hasPrefix(".")
+        else { return nil }
+        return base
     }
 
     func cancelDownload(id: UUID) {
@@ -345,7 +373,15 @@ final class ModelDownloader: NSObject, @unchecked Sendable, URLSessionDownloadDe
         }
 
         let filename = activeDownloads[idx].filename
-        let destination = ModelManager.modelsDirectory.appendingPathComponent(filename)
+        guard let safeName = Self.safeDestinationName(filename) else {
+            DispatchQueue.main.async { [self] in
+                guard let idx = activeDownloads.firstIndex(where: { $0.id == dlId }) else { return }
+                activeDownloads[idx].state = .failed
+            }
+            tasks.removeValue(forKey: downloadTask.taskIdentifier)
+            return
+        }
+        let destination = ModelManager.modelsDirectory.appendingPathComponent(safeName)
 
         do {
             try? FileManager.default.removeItem(at: destination)

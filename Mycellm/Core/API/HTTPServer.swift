@@ -475,8 +475,18 @@ actor HTTPServer {
                 }
                 let filename = (body["filename"] as? String)
                     .flatMap { $0.isEmpty ? nil : $0 } ?? parsed.lastPathComponent
-                guard !filename.isEmpty, !filename.contains("/") else {
-                    return try Self.error("filename required (or a URL ending in one)")
+                // ⚠️ `/` ALONE IS NOT ENOUGH. "." and ".." contain no slash and
+                // sailed through, resolving the destination to the models
+                // directory itself or its parent. The write then fails on a
+                // directory rather than escaping, but the manifest branch
+                // rejects ".." properly and these two must not disagree about
+                // what a safe name is. A leading dot is refused as well — it
+                // covers both of those and keeps a caller from writing over
+                // `.staging/`, which is where in-flight downloads live.
+                guard !filename.contains("/"),
+                      ModelDownloader.safeDestinationName(filename) != nil else {
+                    return try Self.error(
+                        "filename must be a plain file name — no '/', no '..', no leading '.'")
                 }
 
                 let decision = DownloadPolicy.decide(
@@ -493,13 +503,16 @@ actor HTTPServer {
                     ], status: .conflict)
                 }
 
-                await MainActor.run {
+                let downloadId = await MainActor.run {
                     nodeService.modelDownloader.download(
                         url: urlString, filename: filename, sha256: sha256,
                         allowExpensive: (body["allow_expensive"] as? Bool) ?? false)
                 }
+                // Hand back the id at start, so a caller can abort without
+                // having to list downloads and match on filename first.
                 return try Self.json([
                     "status": "downloading", "url": urlString,
+                    "download_id": downloadId?.uuidString ?? "",
                     "filename": filename, "format": "gguf", "sha256": sha256,
                 ])
             }
@@ -531,6 +544,12 @@ actor HTTPServer {
                 guard let filename, !filename.isEmpty else {
                     return try Self.error("filename required for gguf downloads")
                 }
+                // A repo path may contain directories; the name it writes may
+                // not walk out of the models directory.
+                guard ModelDownloader.safeDestinationName(filename) != nil else {
+                    return try Self.error(
+                        "filename must not resolve outside the models directory")
+                }
                 if case .refused(let network) = decision {
                     // GGUF size isn't known without a HEAD; report 0 rather than
                     // guess, and let the message carry the reason.
@@ -543,12 +562,13 @@ actor HTTPServer {
                         ] as [String: Any],
                     ], status: .conflict)
                 }
-                await MainActor.run {
+                let downloadId = await MainActor.run {
                     nodeService.modelDownloader.download(
                         repoId: repoId, filename: filename, allowExpensive: allowExpensive)
                 }
                 return try Self.json([
                     "status": "downloading", "repo_id": repoId,
+                    "download_id": downloadId?.uuidString ?? "",
                     "filename": filename, "format": "gguf",
                 ])
             }
@@ -607,6 +627,9 @@ actor HTTPServer {
             return try Self.json([
                 "downloads": files.map { d in
                     [
+                        // `download_id` is what downloads/abort takes. Omitting
+                        // it here made every file download uncancellable.
+                        "download_id": d.id.uuidString,
                         "repo_id": d.repoId, "filename": d.filename, "format": "gguf",
                         "state": d.state.rawValue.lowercased(), "progress": d.progress,
                         "bytes_downloaded": d.bytesDownloaded, "total_bytes": d.totalBytes,
@@ -636,18 +659,33 @@ actor HTTPServer {
         // The old path stays registered as a deprecated alias: it shipped in
         // build 18, and silently 404ing a client that already adopted it would
         // trade one broken cancel button for another.
+        // ⚠️ BOTH COLLECTIONS, NOT JUST `repoDownloads`. A file download and an
+        // MLX repo download live in different arrays with different cancel
+        // calls, and this only ever looked in the repo one — so a GGUF download
+        // (including every URL install, which lands in the same array) could be
+        // started through the API and then never stopped through it. The
+        // listing compounded it by omitting `download_id` for file downloads,
+        // so there was no value a caller could even send here.
         let abortDownload: @Sendable (Request) async throws -> Response = { request in
             let body = try await Self.parseBody(request)
             guard let idString = body["download_id"] as? String, let id = UUID(uuidString: idString) else {
                 return try Self.error("download_id required")
             }
-            let known = await MainActor.run {
-                nodeService.modelDownloader.repoDownloads.contains { $0.id == id }
+            let cancelled = await MainActor.run { () -> Bool in
+                let downloader = nodeService.modelDownloader
+                if downloader.repoDownloads.contains(where: { $0.id == id }) {
+                    downloader.cancelRepo(id: id)
+                    return true
+                }
+                if downloader.activeDownloads.contains(where: { $0.id == id }) {
+                    downloader.cancelDownload(id: id)
+                    return true
+                }
+                return false
             }
-            guard known else {
+            guard cancelled else {
                 return try Self.error("Unknown download_id", status: .notFound)
             }
-            await MainActor.run { nodeService.modelDownloader.cancelRepo(id: id) }
             return try Self.json(["status": "aborted", "download_id": idString])
         }
 
