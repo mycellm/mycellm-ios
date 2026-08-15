@@ -18,7 +18,7 @@ struct SettingsView: View {
                 identitySection
                 nodeSection
                 chatSection
-                chatSyncSection
+                if AppDatabase.syncFeatureEnabled { chatSyncSection }
                 privacyGuardSection
                 remoteEndpointSection
                 localAPISection

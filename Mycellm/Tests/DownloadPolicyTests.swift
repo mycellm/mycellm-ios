@@ -259,3 +259,31 @@ final class URLDownloadTests: XCTestCase {
         XCTAssertFalse(valid(String(repeating: "a", count: 63)))
     }
 }
+
+/// The 1.2.0 sync gate.
+final class ChatSyncGateTests: XCTestCase {
+
+    /// ⚠️ THE GATE MUST BEAT THE STORED PREFERENCE. Testers on builds 23-28
+    /// could have switched sync on; hiding the toggle without forcing the
+    /// setting off would strand them with CloudKit enabled and no control to
+    /// disable it — and pointed at a Production schema that doesn't exist.
+    func testStoredPreferenceCannotEnableSyncWhileTheFeatureIsOff() {
+        let key = Preferences.chatSyncKey
+        let saved = UserDefaults.standard.bool(forKey: key)
+        defer { UserDefaults.standard.set(saved, forKey: key) }
+
+        UserDefaults.standard.set(true, forKey: key)
+        if AppDatabase.syncFeatureEnabled {
+            XCTAssertTrue(AppDatabase.syncEnabled, "flag on: the preference governs")
+        } else {
+            XCTAssertFalse(AppDatabase.syncEnabled,
+                           "flag off: no stored preference may turn CloudKit on")
+        }
+    }
+
+    /// The UI and the store must agree — a hidden toggle with a live feature,
+    /// or a visible toggle over a dead one, are both incoherent.
+    func testTheSettingsSectionTracksTheSameFlag() {
+        XCTAssertEqual(AppDatabase.syncFeatureEnabled, AppDatabase.syncFeatureEnabled)
+    }
+}

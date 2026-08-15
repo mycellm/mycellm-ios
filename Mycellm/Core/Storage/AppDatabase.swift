@@ -43,11 +43,30 @@ enum AppDatabase {
     /// the container fails to open at launch.
     static let cloudContainerID = "iCloud.com.mycellm.app"
 
+    /// ⚠️ OFF FOR 1.2.0 — THE FEATURE WORKS, THE DEPLOYMENT DOESN'T.
+    /// Everything on the device side is in place: the entitlement, the
+    /// container, the store split, the migration, and the schema fix that had
+    /// been making the app unable to launch with sync on. What is missing is
+    /// outside the binary — the CloudKit schema has never been deployed to the
+    /// Production environment, and a distribution build talks to Production
+    /// (`icloud-container-environment` in the shipped entitlements). So
+    /// enabling it syncs nothing, silently: no error, no data moving.
+    ///
+    /// A visible setting that does nothing is worse than an absent one, so the
+    /// toggle is hidden for this release. Flip this to true once the schema is
+    /// deployed — that is the whole change, nothing else is conditional on it.
+    static let syncFeatureEnabled = false
+
     /// Whether the chat store is attached to CloudKit. Read at container
     /// creation — SwiftData fixes this per configuration, so changing it means
     /// rebuilding the container (see `Preferences.chatSyncEnabled`).
+    ///
+    /// ⚠️ THE FEATURE FLAG WINS OVER THE PREFERENCE, DELIBERATELY. Testers on
+    /// builds 23-28 could have switched sync on; hiding the toggle without
+    /// forcing the setting off would strand them with it enabled and no
+    /// control to disable it. If the UI cannot govern it, it is off.
     static var syncEnabled: Bool {
-        UserDefaults.standard.bool(forKey: Preferences.chatSyncKey)
+        syncFeatureEnabled && UserDefaults.standard.bool(forKey: Preferences.chatSyncKey)
     }
 
     /// What the *live* container was built with, as opposed to what the
