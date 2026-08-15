@@ -145,6 +145,10 @@ so the dashboard and any fleet tooling manage an iPad the same way they manage a
 Linux box. Everything under `/v1/node/**` requires the node API key; the
 inference, discovery and scrape paths are open.
 
+App 1.2.0 reports **core parity 0.7.0** — the version `/health`,
+`/v1/node/status` and the peer capability advertisement carry, and the one fleet
+tooling should compare against. It moves independently of the App Store version.
+
 **OpenAI-compatible**
 
 | Method | Path | Description |
@@ -183,8 +187,8 @@ inference, discovery and scrape paths are open.
 | GET | `/v1/node/models/{name}/config` | Model config for editing (key masked) |
 | GET | `/v1/node/models/downloads` | Download progress |
 | GET | `/v1/node/models/load-status` | Load state incl. failures |
-| POST | `/v1/node/models/download` | Fetch a GGUF file or MLX repo |
-| POST | `/v1/node/models/downloads/abort` | Abort a download |
+| POST | `/v1/node/models/download` | Install from Hugging Face (`repo_id`), an arbitrary URL (`url` + `sha256`), or an MLX manifest (`files`) |
+| POST | `/v1/node/models/downloads/abort` | Abort a download by `download_id` |
 | POST | `/v1/node/models/load` · `/unload` · `/reload` · `/update` | Load lifecycle |
 | POST | `/v1/node/models/scope` | Set home/public/networks scope |
 | POST | `/v1/node/models/load-status/clear` | Dismiss a failed load |
