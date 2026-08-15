@@ -256,7 +256,7 @@ actor MLXBackend: InferenceBackend {
         let (rawText, promptTokens, completionTokens) = try await container.perform { context in
             // ChatML prompt -> token ids (matches MLXTokenizerAdapter's encoding).
             let fullTokens = context.tokenizer.encode(text: prompt, addSpecialTokens: false)
-            let resolved = reuseEnabled
+            let resolved = try reuseEnabled
                 ? Self.resolveCachedInput(context: context, fullTokens: fullTokens,
                                           parameters: parameters, store: store, modelName: modelNameSnap)
                 : (input: LMInput(tokens: MLXArray(fullTokens)),
@@ -331,7 +331,7 @@ actor MLXBackend: InferenceBackend {
                     let modelNameSnap = self.loadedModel ?? ""
                     let count: Int = try await container.perform { context in
                         let fullTokens = context.tokenizer.encode(text: prompt, addSpecialTokens: false)
-                        let resolved = reuseEnabled
+                        let resolved = try reuseEnabled
                             ? Self.resolveCachedInput(context: context, fullTokens: fullTokens,
                                                       parameters: parameters, store: store, modelName: modelNameSnap)
                             : (input: LMInput(tokens: MLXArray(fullTokens)),
@@ -602,7 +602,7 @@ actor MLXBackend: InferenceBackend {
         parameters: GenerateParameters,
         store: KVCacheStore,
         modelName: String
-    ) -> (input: LMInput, cache: [KVCache], reused: Bool) {
+    ) throws -> (input: LMInput, cache: [KVCache], reused: Bool) {
         if let cached = store.cache,
             store.modelName == modelName,
             !store.tokens.isEmpty,
@@ -613,7 +613,7 @@ actor MLXBackend: InferenceBackend {
         }
         return (
             LMInput(tokens: MLXArray(fullTokens)),
-            context.model.newCache(parameters: parameters),
+            try context.model.newCache(parameters: parameters),
             false
         )
     }
