@@ -31,6 +31,10 @@ struct PeersView: View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 20) {
+                    // What this device is doing right now — the first question
+                    // a default install raises and the one nothing answered.
+                    thisDeviceSection
+
                     // Network memberships
                     networksSection
 
@@ -74,6 +78,99 @@ struct PeersView: View {
             if on { await node.connectMembership(m) }
             else { await node.disconnectMembership(networkId: m.id) }
         }
+    }
+
+    // MARK: - This device
+
+    /// What this device is contributing, and where to reach it.
+    ///
+    /// ⚠️ A DEFAULT INSTALL PREVIOUSLY ANSWERED NONE OF THIS. The screen opened
+    /// on a Public network card and "No connected peers", which says nothing
+    /// about whether the device is actually serving, why not, or how anything
+    /// would reach it. All three are knowable — the node computes its own
+    /// serving fitness for the capability advertisement, and the LAN address is
+    /// the whole point of the local API — they simply weren't shown anywhere.
+    private var thisDeviceSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            SectionHeader(title: "This Device")
+
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 10) {
+                    Circle()
+                        .fill(isServing ? Color.sporeGreen : Color.consoleDim)
+                        .frame(width: 8, height: 8)
+                        .shadow(color: isServing ? Color.sporeGreen.opacity(0.6) : .clear, radius: 4)
+                    Text(isServing ? "Serving" : "Not serving")
+                        .font(.mono(13, weight: .semibold))
+                        .foregroundStyle(Color.consoleText)
+                    Spacer()
+                    Text(node.nodeName)
+                        .font(.mono(11))
+                        .foregroundStyle(Color.consoleDim)
+                }
+
+                // Say *why* rather than leaving the user to guess — every
+                // reason here is actionable.
+                Text(servingExplanation)
+                    .font(.mono(10))
+                    .foregroundStyle(Color.consoleDim)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if preferences.httpServerEnabled {
+                    Divider().overlay(Color.cardBorder)
+                    HStack {
+                        Text("Local API")
+                            .font(.mono(11))
+                            .foregroundStyle(Color.consoleDim)
+                        Spacer()
+                        Text(lanEndpoint)
+                            .font(.mono(11))
+                            .foregroundStyle(Color.consoleText)
+                            .textSelection(.enabled)
+                    }
+                }
+            }
+            .padding(12)
+            .background(Color.cardBackground)
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.cardBorder, lineWidth: 1))
+        }
+        .padding(.horizontal)
+    }
+
+    private var isServing: Bool {
+        node.isRunning
+            && !node.modelManager.loadedModels.isEmpty
+            && DeviceState.canServe()
+    }
+
+    /// The same conditions the node uses to demote itself in its capability
+    /// advertisement, phrased for a person. Ordered most-blocking first.
+    private var servingExplanation: String {
+        if !node.isRunning {
+            return "The node is stopped. Start it on the Dashboard to contribute compute and earn credits."
+        }
+        if node.modelManager.loadedModels.isEmpty {
+            return "No model is loaded. Load one on the Models tab — a loaded model is what this device offers the network."
+        }
+        if ProcessInfo.processInfo.thermalState == .critical {
+            return "Paused: the device is too hot. Serving resumes automatically once it cools."
+        }
+        if ProcessInfo.processInfo.isLowPowerModeEnabled {
+            return "Paused: Low Power Mode throttles the GPU. Turn it off in iOS Settings to serve again."
+        }
+        if !DeviceState.canServe() {
+            return "Paused: battery is below 20% and unplugged. Serving resumes on charge."
+        }
+        return "Answering requests relayed from the network, and reachable directly on the LAN."
+    }
+
+    private var lanEndpoint: String {
+        let ip = node.stats.recentEvents.compactMap { item -> String? in
+            if case .networkInfo(let lan, _, _) = item.kind, lan != "—" { return lan }
+            return nil
+        }.first
+        return "http://\(ip ?? "this-device"):\(preferences.apiPort)"
     }
 
     // MARK: - Networks
@@ -279,16 +376,78 @@ struct PeersView: View {
             if ScreenshotMode.isActive {
                 SectionHeader(title: "Peers", count: ScreenshotMode.mockPeers.count)
                 ForEach(ScreenshotMode.mockPeers) { peer in mockPeerRow(peer) }
-            } else {
-                SectionHeader(title: "Peers", count: 0)
-                EmptyState(message: "No connected peers", icon: "person.2")
+                return AnyView(EmptyView())
             }
-            #else
-            SectionHeader(title: "Peers", count: 0)
-            EmptyState(message: "No connected peers", icon: "person.2")
             #endif
+            return AnyView(livePeers)
         }
         .padding(.horizontal)
+    }
+
+    /// ⚠️ THIS WAS HARDCODED TO ZERO. The header read `count: 0` and the body
+    /// was an unconditional "No connected peers" — the view never consulted the
+    /// peer list at all, so a device with peers attached still reported none.
+    @ViewBuilder
+    private var livePeers: some View {
+        let peers = node.connectedPeerInfo
+        SectionHeader(title: "Peers", count: peers.count)
+
+        if peers.isEmpty {
+            // A bare "No connected peers" is the default state for essentially
+            // every install and explains nothing. On iOS the node reaches the
+            // network through the bootstrap, which relays inference to it —
+            // direct peer sessions are the exception, not the norm, so an empty
+            // list here is normal rather than a fault to go hunting for.
+            VStack(spacing: 8) {
+                Image(systemName: "person.2")
+                    .font(.system(size: 26))
+                    .foregroundStyle(Color.consoleDim)
+                Text("No direct peers")
+                    .font(.mono(12))
+                    .foregroundStyle(Color.consoleDim)
+                Text("Normal — this device reaches the network through its bootstrap, which relays requests to it. Direct peer sessions appear here when they open.")
+                    .font(.mono(10))
+                    .foregroundStyle(Color.consoleDim)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 24)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 20)
+        } else {
+            ForEach(peers) { peer in peerRow(peer) }
+        }
+    }
+
+    private func peerRow(_ peer: PeerManager.PeerInfo) -> some View {
+        HStack(spacing: 10) {
+            Circle()
+                .fill(Color.sporeGreen)
+                .frame(width: 8, height: 8)
+                .shadow(color: Color.sporeGreen.opacity(0.6), radius: 4)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(String(peer.peerId.prefix(16)) + "…")
+                    .font(.mono(13, weight: .semibold))
+                    .foregroundStyle(Color.consoleText)
+                Text(peer.remoteAddress)
+                    .font(.mono(10))
+                    .foregroundStyle(Color.consoleDim)
+            }
+            Spacer()
+            VStack(alignment: .trailing, spacing: 2) {
+                Text(peer.role)
+                    .font(.mono(10))
+                    .foregroundStyle(Color.consoleText)
+                if let ms = peer.latencyMs {
+                    Text(String(format: "%.0f ms", ms))
+                        .font(.mono(9))
+                        .foregroundStyle(Color.sporeGreen)
+                }
+            }
+        }
+        .padding(12)
+        .background(Color.cardBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.cardBorder, lineWidth: 1))
     }
 
     #if DEBUG

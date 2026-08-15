@@ -10,20 +10,19 @@ struct SettingsView: View {
     @State private var showingTipJar = false
     @State private var safariURL: URL?
     @State private var tipJar = TipJarManager()
-    // Tab selection lives in @AppStorage so any view can navigate — MainTabView
-    // owns the TabView, ChatView already jumps to Models this way.
-    @AppStorage("lastSelectedTab") private var selectedTab = 1
+    @State private var copiedKey = false
 
     var body: some View {
         NavigationStack {
             List {
                 identitySection
                 nodeSection
-                networkSection
                 chatSection
+                chatSyncSection
                 privacyGuardSection
                 remoteEndpointSection
                 localAPISection
+                downloadsSection
                 displaySection
                 screensaverSection
                 storageSection
@@ -106,34 +105,6 @@ struct SettingsView: View {
         }
     }
 
-    // MARK: - Network
-
-    // Network config now lives WITH each network on the Network tab — endpoint,
-    // fleet key, trust, sharing, and enable/disable are all in a network's card /
-    // detail sheet. Settings keeps only a pointer so there's one home per thing.
-    private var networkSection: some View {
-        Section(header: Text("Network"), footer: Text("Manage networks — bootstrap endpoint, fleet key, sharing, trust, and enable/disable — on each network's card in the Network tab.").font(.mono(10))) {
-            // ⚠️ IT LOOKED TAPPABLE AND WASN'T. A row with a trailing arrow is a
-            // promise of navigation; this one was a LabeledContent that did
-            // nothing, so the only way to discover the Network tab was to guess.
-            // Same idiom ChatView already uses to reach the Models tab — the tab
-            // selection is @AppStorage, so setting it IS the navigation.
-            Button {
-                selectedTab = 3          // Network — see MainTabView tags
-            } label: {
-                HStack {
-                    Label("Manage in Network tab", systemImage: "globe")
-                        .font(.mono(13))
-                        .foregroundStyle(Color.consoleText)
-                    Spacer()
-                    Image(systemName: "arrow.right")
-                        .font(.system(size: 12))
-                        .foregroundStyle(Color.consoleDim)
-                }
-            }
-        }
-    }
-
     // MARK: - Chat
 
     private var chatSection: some View {
@@ -160,15 +131,13 @@ struct SettingsView: View {
                 NavigationLink {
                     RulesView()
                 } label: {
+                    // ⚠️ NO MANUAL CHEVRON HERE. NavigationLink draws its own
+                    // disclosure indicator, so adding one to the label rendered
+                    // the row with two — "10 built-in › ›".
                     LabeledContent("Rules") {
-                        HStack(spacing: 4) {
-                            Text("\(SensitiveDataGuard.builtinRules.count) built-in")
-                                .font(.mono(12))
-                                .foregroundStyle(Color.consoleDim)
-                            Image(systemName: "chevron.right")
-                                .font(.system(size: 12))
-                                .foregroundStyle(Color.consoleDim)
-                        }
+                        Text("\(SensitiveDataGuard.builtinRules.count) built-in")
+                            .font(.mono(12))
+                            .foregroundStyle(Color.consoleDim)
                     }
                 }
                 LabeledContent("Public Network") {
@@ -232,19 +201,82 @@ struct SettingsView: View {
     // MARK: - Local API
 
     private var localAPISection: some View {
-        Section("Local API Server") {
+        Section(
+            header: Text("Local API Server"),
+            footer: Text("Inference and discovery (/v1/chat/completions, /v1/models, /health, /metrics) are always open on the LAN. Management (/v1/node/…) needs the key below — without one it works only from this device, so the dashboard and fleet tools can't reach it. This key is device-level and grants the full management surface; for narrow cross-node control (status, load/unload/scope) set a Fleet Key on a network instead — Network tab → the network → Fleet Key.").font(.mono(10))
+        ) {
             Toggle("HTTP Server", isOn: Binding(
                 get: { preferences.httpServerEnabled },
                 set: { preferences.httpServerEnabled = $0 }
             ))
             .font(.mono(13))
 
-            if preferences.httpServerEnabled {
+            // ⚠️ NOT GATED ON THE TOGGLE ABOVE, FOR TWO REASONS.
+            //
+            // The toggle is not the only thing that starts the server —
+            // `networkMode.apiServerEnabled` does too, so a node can be serving
+            // on the LAN while this reads off. Hiding the key behind it hid the
+            // key in exactly the case where someone needed it: a reachable node
+            // they cannot authenticate against.
+            //
+            // And the gate did not even work. `Preferences` is @Observable, but
+            // `httpServerEnabled` is a computed property over UserDefaults —
+            // the macro instruments stored properties only, so flipping the
+            // toggle wrote the value and invalidated nothing. The rows stayed
+            // hidden until some unrelated change rebuilt the view.
+            Group {
                 LabeledContent("Port") {
                     Text(verbatim: "\(preferences.apiPort)")
                         .font(.mono(12))
                         .foregroundStyle(Color.consoleDim)
                 }
+
+                // ⚠️ WITHOUT THIS FIELD THE MANAGEMENT API IS UNREACHABLE, FULL
+                // STOP. NodeAuth reads `api_key` from UserDefaults and, when it
+                // is empty, serves /v1/node/** to loopback only — everything
+                // else gets 403. Nothing else in the app ever wrote that key,
+                // so from 1.1.0 until now no iOS node could be managed from the
+                // dashboard or any fleet tool, on any network, ever. The lock
+                // was working exactly as designed; there was simply no key.
+                HStack {
+                    Text("API Key").font(.mono(13)).foregroundStyle(Color.consoleDim)
+                    RevealableSecureField("not set", text: Binding(
+                        get: { preferences.apiKey },
+                        set: { preferences.apiKey = $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    ))
+                    .accessibilityIdentifier("settings.nodeApiKey")
+
+                    // ⚠️ A GENERATED KEY YOU CANNOT COPY IS A KEY YOU CANNOT
+                    // USE. The whole point of minting one automatically is that
+                    // the management API works out of the box — but the client
+                    // that needs it runs somewhere else, so the key has to
+                    // leave the device. Retyping 40 hex characters off a phone
+                    // screen is not a workflow. Same copy affordance the Peer ID
+                    // row already uses.
+                    Button {
+                        UIPasteboard.general.string = preferences.apiKey
+                        copiedKey = true
+                    } label: {
+                        Image(systemName: copiedKey ? "checkmark" : "doc.on.doc")
+                            .font(.system(size: 14))
+                            .foregroundStyle(copiedKey ? Color.sporeGreen : Color.consoleDim)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(preferences.apiKey.isEmpty)
+                    .accessibilityIdentifier("settings.copyApiKey")
+                    .accessibilityLabel("Copy API key")
+                }
+
+                Button {
+                    preferences.apiKey = Preferences.generateAPIKey()
+                    copiedKey = false
+                } label: {
+                    Text(preferences.apiKey.isEmpty ? "Generate Key" : "Regenerate Key")
+                        .font(.mono(12))
+                        .foregroundStyle(Color.sporeGreen)
+                }
+                .accessibilityIdentifier("settings.generateApiKey")
+
                 Text("Local HTTP server exposes an OpenAI-compatible API on this device.")
                     .font(.mono(10))
                     .foregroundStyle(Color.consoleDim)
@@ -328,6 +360,48 @@ struct SettingsView: View {
     }
 
     // MARK: - Storage
+
+    private var chatSyncSection: some View {
+        Section(
+            header: Text("Chat Sync"),
+            footer: Text("Syncs conversations to your private iCloud, shared across your devices signed into the same Apple ID. Off by default — chats can contain the credentials and personal data the Privacy Guard exists to catch, so this is opt-in. Models and activity never sync. Turning it off stops future syncing but does not remove what iCloud already holds; delete conversations first if that is what you want.").font(.mono(10))
+        ) {
+            Toggle("Sync to iCloud", isOn: Binding(
+                get: { preferences.chatSyncEnabled },
+                set: { preferences.chatSyncEnabled = $0 }
+            ))
+            .font(.mono(13))
+            .accessibilityIdentifier("settings.chatSync")
+
+            // A toggle whose effect is invisible until relaunch looks broken.
+            // Say so, but only while it is actually true.
+            if let active = AppDatabase.activeSyncSetting, active != preferences.chatSyncEnabled {
+                HStack(spacing: 6) {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 11))
+                    Text(preferences.chatSyncEnabled
+                         ? "Sync starts the next time the app launches."
+                         : "Sync stops the next time the app launches.")
+                        .font(.mono(10))
+                }
+                .foregroundStyle(Color.ledgerGold)
+            }
+        }
+    }
+
+    private var downloadsSection: some View {
+        Section(
+            header: Text("Downloads"),
+            footer: Text("Models run to several gigabytes. When off, downloads are refused on cellular and in Low Data Mode — the API answers 409 expensive_network with the size, so a caller can retry with allow_expensive. Wi-Fi is unaffected.").font(.mono(10))
+        ) {
+            Toggle("Allow on Cellular", isOn: Binding(
+                get: { preferences.allowExpensiveDownloads },
+                set: { preferences.allowExpensiveDownloads = $0 }
+            ))
+            .font(.mono(13))
+            .accessibilityIdentifier("settings.allowExpensiveDownloads")
+        }
+    }
 
     private var storageSection: some View {
         Section("Storage") {
@@ -426,6 +500,36 @@ struct SettingsView: View {
                     .font(.mono(12))
                     .foregroundStyle(Color.consoleDim)
             }
+
+            // Moved out of the footer: these are reference links, which is what
+            // an About section is for. In the footer they read as fine print
+            // under the logo rather than as things you can tap.
+            Button {
+                safariURL = URL(string: NetworkConfig.privacyURL)
+            } label: {
+                HStack {
+                    Text("Privacy Policy")
+                        .font(.mono(13))
+                        .foregroundStyle(Color.consoleText)
+                    Spacer()
+                    Image(systemName: "arrow.up.right.square")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Color.consoleDim)
+                }
+            }
+            Button {
+                safariURL = URL(string: NetworkConfig.termsURL)
+            } label: {
+                HStack {
+                    Text("Terms of Service")
+                        .font(.mono(13))
+                        .foregroundStyle(Color.consoleText)
+                    Spacer()
+                    Image(systemName: "arrow.up.right.square")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Color.consoleDim)
+                }
+            }
         }
     }
 
@@ -434,22 +538,6 @@ struct SettingsView: View {
     private var footerSection: some View {
         Section {
             VStack(spacing: 16) {
-                HStack(spacing: 16) {
-                    Button("Privacy Policy") {
-                        safariURL = URL(string: NetworkConfig.privacyURL)
-                    }
-                    .font(.mono(12))
-                    .foregroundStyle(Color.relayBlue)
-                    Text("|")
-                        .font(.mono(12))
-                        .foregroundStyle(Color.consoleDim)
-                    Button("Terms of Service") {
-                        safariURL = URL(string: NetworkConfig.termsURL)
-                    }
-                    .font(.mono(12))
-                    .foregroundStyle(Color.relayBlue)
-                }
-
                 VStack(spacing: 8) {
                     Image("MycellmLogo-red")
                         .resizable()
