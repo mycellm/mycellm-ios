@@ -34,8 +34,10 @@ enum NetworkConfig {
     /// NodeService (peer hello), and Capabilities all read this. Bump when
     /// upstream Python mycellm cuts a release that changes the wire
     /// protocol or the OpenAI-API surface that iOS mirrors.
-    /// 0.6.3 = hardening-era core (stop-holdback, download verification,
-    /// exact usage, context_length, bounded KV) — released fleet-wide
-    /// 2026-07-30.
-    static let version = "0.6.3"
+    /// 0.7.0 = leaf-node parity core (node management surface, /v1/embeddings,
+    /// Prometheus /metrics, activity + log SSE, URL and MLX-manifest installs
+    /// with per-file digest verification) — released fleet-wide 2026-08-15.
+    /// Supersedes 0.6.3, the hardening-era core (stop-holdback, download
+    /// verification, exact usage, context_length, bounded KV).
+    static let version = "0.7.0"
 }

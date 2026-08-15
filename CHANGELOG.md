@@ -9,7 +9,7 @@ version of the Python [mycellm](https://github.com/mycellm/mycellm) core whose
 protocol and API surface this build matches. A release can bump one without the
 other.
 
-## [1.2.0] — 2026-08-14 · build 22 · core parity 0.6.3
+## [1.2.0] — 2026-08-15 · build 29 · core parity 0.7.0
 
 **Leaf-node API parity, plus the two things real hardware exposed.** A dashboard
 or fleet tool pointed at an iOS node now manages it the same way it manages a
@@ -58,6 +58,18 @@ could have shown.
   and nothing else.
 - **Privacy Policy and Terms moved into About** as tappable rows. In the footer
   they read as fine print under the logo rather than as things you can open.
+- **Chats moved to their own SwiftData store.** Sessions and messages live in a
+  store separate from node/model state, because the two have different sync
+  requirements: chats are a candidate for iCloud, a node's local model registry
+  never is. Existing chats are **copied** into the new store on first launch —
+  copied, not moved, so a migration that goes wrong loses nothing. If the split
+  container cannot be opened for any reason the app falls back to the legacy
+  single store rather than starting empty.
+- **`ChatSession.messages` is now optional.** Not a style choice: CloudKit
+  requires every relationship to be optional, and a non-optional one takes the
+  process down at container-init time the moment a store has CloudKit enabled.
+  The declaration carries a comment saying so, because it reads like something
+  worth "tidying up".
 
 ### Fixed
 
@@ -112,6 +124,31 @@ could have shown.
   anything. The policy is enforced per-*request* rather than per-session because
   the two download paths don't share a session — `MLXRepo` uses
   `URLSession.shared`, whose configuration cannot be mutated.
+
+### Added — Model sources
+
+- **Install from an arbitrary URL.** `POST /v1/node/models/download` accepts
+  `source_url` + `sha256` alongside the Hugging Face `repo`/`filename` pair, so
+  an admin can stage a model an air-gapped or private fleet needs without it
+  existing on the Hub. Same feature landed in the Python core at 0.7.0; the two
+  request shapes are identical.
+- **Install an MLX directory from a manifest.** A repo is many files, not one,
+  so a URL install of an MLX model takes a `manifest` array of
+  `{name, url, sha256}`. Files stage under `.staging/` and the directory is
+  published by rename, so an interrupted install leaves nothing half-usable.
+  MLX is how Apple Silicon actually runs models — a URL-install path that only
+  handled single-file GGUF would have excluded the format this app prefers on
+  the hardware it runs on.
+- **`sha256` is required, and it is checked, not recorded.** Every file is
+  digested as it lands and a mismatch fails the install (`digestMismatch`) and
+  deletes the staged bytes. `https` is required, filenames are validated against
+  path traversal, and a manifest must contain `config.json` and at least one
+  `.safetensors` before anything is fetched. An arbitrary-URL installer that
+  trusted its input would be a remote code-execution surface pointed at the
+  fleet.
+- Hugging Face tokens are **not** attached to non-Hub requests — the auth header
+  is built per download rather than per session, so a `source_url` install can't
+  leak the token to whatever host it points at.
 
 ### Added — Device telemetry
 
@@ -195,6 +232,16 @@ reasoning on each.
 
 ### Not done
 
+- **iCloud chat sync is built but hidden in 1.2.0.** The split store, the
+  CloudKit-backed configuration and the migration all ship and are exercised by
+  tests; the Settings toggle is gated off behind
+  `AppDatabase.syncFeatureEnabled`, and the gate overrides any stored
+  preference, so a device that had the toggle on in a TestFlight build comes up
+  local-only. What's missing is not code — it's the CloudKit **production**
+  schema, which SwiftData only auto-creates in the development environment while
+  every distribution build binds to production. Shipping the toggle before that
+  deployment would offer users a sync switch that silently does nothing. Flip
+  one constant once the schema is deployed.
 - **Downloads still don't survive backgrounding.** iOS suspends the app within
   ~30s and the transfer dies. `URLSessionConfiguration.background` is the fix,
   but it is a larger change than it looks: the GGUF path could adopt it, while
