@@ -51,13 +51,69 @@ actor HTTPServer {
             try Self.json(HealthRoute.response(node: nodeService))
         }
 
+        // ── Metrics ──
+        //
+        // Mounted at the root, not under /v1/node, because that is where Python
+        // serves it and where a Prometheus scrape config already points.
+        router.get("/metrics") { _, _ -> Response in
+            let text = await NodeMetrics.render(node: nodeService)
+            return Response(
+                status: .ok,
+                headers: [.contentType: NodeMetrics.contentType],
+                body: .init(byteBuffer: ByteBuffer(string: text))
+            )
+        }
+
         // ── Node Status ──
         router.get("/v1/node/status") { _, _ -> Response in
-            try Self.json(NodeRoutes.status(node: nodeService))
+            try Self.json(await NodeRoutes.status(node: nodeService))
         }
 
         router.get("/v1/node/system") { _, _ -> Response in
             try Self.json(NodeRoutes.system())
+        }
+
+        router.get("/v1/node/version") { _, _ -> Response in
+            try Self.json(await NodeRoutes.version())
+        }
+
+        router.get("/v1/node/peers") { _, _ -> Response in
+            try Self.json(NodeRoutes.peers(node: nodeService))
+        }
+
+        router.get("/v1/node/connections") { _, _ -> Response in
+            try Self.json(NodeRoutes.connections(node: nodeService))
+        }
+
+        // ── Activity & Logs ──
+
+        router.get("/v1/node/activity") { request, _ -> Response in
+            let activity = nodeService.stats.activity
+            let limit = Int(request.uri.queryParameters.get("limit") ?? "50") ?? 50
+            let type = request.uri.queryParameters.get("type").map { String($0) }
+            return try Self.json([
+                "events": activity.recent(limit: limit, eventType: type),
+                "stats": activity.stats(),
+                "sparklines": [
+                    "requests": activity.sparkline("requests", minutes: 30),
+                    "tokens": activity.sparkline("tokens", minutes: 30),
+                    "credits_earned": activity.sparkline("credits_earned", minutes: 30),
+                    "credits_spent": activity.sparkline("credits_spent", minutes: 30),
+                ] as [String: Any],
+            ])
+        }
+
+        router.get("/v1/node/activity/stream") { _, _ -> Response in
+            SSEResponse.stream(nodeService.stats.activity.subscribe()) { $0.asDict }
+        }
+
+        router.get("/v1/node/logs") { request, _ -> Response in
+            let limit = Int(request.uri.queryParameters.get("limit") ?? "100") ?? 100
+            return try Self.json(["logs": LogBroadcaster.shared.recent(limit: limit)])
+        }
+
+        router.get("/v1/node/logs/stream") { _, _ -> Response in
+            SSEResponse.stream(LogBroadcaster.shared.subscribe()) { $0.asDict }
         }
 
         // ── OpenAI Compatible ──
@@ -67,6 +123,96 @@ actor HTTPServer {
 
         router.get("/v1/models/capabilities") { _, _ -> Response in
             try Self.json(OpenAIRoutes.listCapabilities(manager: nodeService.modelManager))
+        }
+
+        // ⚠️ REGISTERED AFTER /v1/models/capabilities. Hummingbird matches a
+        // literal segment ahead of a parameter, so the order is not load-bearing
+        // for correctness — but keeping the specific route above the wildcard
+        // keeps it obvious that "capabilities" is not a model id.
+        router.get("/v1/models/:model_id") { _, context -> Response in
+            let id = context.parameters.get("model_id").map { String($0) } ?? ""
+            guard let model = OpenAIRoutes.retrieveModel(id: id, manager: nodeService.modelManager) else {
+                return try Self.error("not found", status: .notFound)
+            }
+            return try Self.json(model)
+        }
+
+        router.post("/v1/embeddings") { request, _ -> Response in
+            let data = try await request.body.collect(upTo: 1024 * 1024)
+
+            func fail(_ status: HTTPResponse.Status, _ message: String, _ type: String, _ code: String) throws -> Response {
+                try Self.json(OpenAIRoutes.errorBody(message, type: type, code: code), status: status)
+            }
+
+            // ⚠️ THREE DISTINCT FAILURES, THREE DISTINCT MESSAGES. Collapsing
+            // them (as a single `?? EmbeddingsRequest()` fallback did) reports
+            // every malformed request as "token array not supported" — advice
+            // that is wrong for two of the three and unactionable for all of
+            // them. A caller has to be able to tell "your JSON is broken" from
+            // "you omitted input" from "send strings, not tokens".
+            guard let req = try? JSONDecoder().decode(
+                OpenAIRoutes.EmbeddingsRequest.self, from: Data(buffer: data))
+            else {
+                return try fail(.badRequest,
+                    "Malformed request body — expected a JSON object.",
+                    "invalid_request_error", "invalid_request")
+            }
+            guard let input = req.input else {
+                return try fail(.badRequest,
+                    "'input' must be a non-empty string or list of strings.",
+                    "invalid_request_error", "invalid_input")
+            }
+            guard let texts = input.texts else {
+                return try fail(.badRequest,
+                    "Token array input is not supported — send 'input' as a string or list of strings.",
+                    "invalid_request_error", "invalid_input")
+            }
+            guard !texts.isEmpty else {
+                return try fail(.badRequest,
+                    "'input' must be a non-empty string or list of strings.",
+                    "invalid_request_error", "invalid_input")
+            }
+
+            // A device serves one model at a time, so resolution is simply
+            // "is the loaded model an embedding model" — the multi-candidate
+            // resolve_model_name() Python needs has nothing to choose between
+            // here. An explicit name that isn't the loaded one still 400s with
+            // model_not_found, as Python does.
+            let mm = nodeService.modelManager
+            let requested = req.model == "auto" ? "" : req.model
+            guard let loaded = mm.loadedModels.first else {
+                return try fail(.badRequest, "No models loaded.",
+                    "invalid_request_error", "model_not_found")
+            }
+            if !requested.isEmpty, requested != loaded.name, requested != loaded.filename {
+                return try fail(.badRequest,
+                    "Model '\(req.model)' not found. No loaded model serves embeddings.",
+                    "invalid_request_error", "model_not_found")
+            }
+
+            do {
+                let result = try await mm.engine.embed(texts)
+                return try Self.json(OpenAIRoutes.embeddingsBody(result, model: loaded.name))
+            } catch let error as MycellmError {
+                switch error {
+                case .embeddingsNotSupported(let message):
+                    return try fail(.badRequest, message,
+                        "invalid_request_error", "embeddings_not_supported")
+                case .modelNotLoaded(let message):
+                    return try fail(.badRequest, message,
+                        "invalid_request_error", "model_not_found")
+                default:
+                    nodeService.recordHTTPInferenceFailure(
+                        model: loaded.name, error: error.localizedDescription)
+                    return try fail(.internalServerError, error.localizedDescription,
+                        "server_error", "inference_error")
+                }
+            } catch {
+                nodeService.recordHTTPInferenceFailure(
+                    model: loaded.name, error: error.localizedDescription)
+                return try fail(.internalServerError, error.localizedDescription,
+                    "server_error", "inference_error")
+            }
         }
 
         router.post("/v1/chat/completions") { request, _ -> Response in
@@ -153,17 +299,29 @@ actor HTTPServer {
                     body: .init(asyncSequence: sseStream)
                 )
             } else {
-                let result = hasImages
-                    ? try await engine.complete(
-                        multimodal: mmMessages,
-                        temperature: req.temperature ?? 0.7,
-                        maxTokens: req.resolvedMaxTokens,
-                        tools: requestedTools)
-                    : try await engine.complete(
-                        messages: engineMessages,
-                        temperature: req.temperature ?? 0.7,
-                        maxTokens: req.resolvedMaxTokens,
-                        tools: requestedTools)
+                let result: InferenceResult
+                do {
+                    result = hasImages
+                        ? try await engine.complete(
+                            multimodal: mmMessages,
+                            temperature: req.temperature ?? 0.7,
+                            maxTokens: req.resolvedMaxTokens,
+                            tools: requestedTools)
+                        : try await engine.complete(
+                            messages: engineMessages,
+                            temperature: req.temperature ?? 0.7,
+                            maxTokens: req.resolvedMaxTokens,
+                            tools: requestedTools)
+                } catch {
+                    // Recorded before rethrowing so `total_errors`, `errors_5min`
+                    // and the error sparkline reflect reality — until now a
+                    // failed completion left no trace anywhere in the API.
+                    // No MainActor hop: unlike recordHTTPInference this touches
+                    // no @Observable state, only the lock-guarded tracker.
+                    nodeService.recordHTTPInferenceFailure(
+                        model: modelName, error: error.localizedDescription)
+                    throw error
+                }
                 await MainActor.run {
                     nodeService.recordHTTPInference(model: req.model, tokens: result.promptTokens + result.completionTokens)
                 }
@@ -205,6 +363,19 @@ actor HTTPServer {
             return try Self.json(results)
         }
 
+        // GET /v1/node/models/search/{repo_id}/files — the repo id contains a
+        // slash (`org/name`), so it is matched with a catch-all and the
+        // trailing "/files" stripped back off. `:param` would only capture
+        // "org" and look up the wrong repo.
+        router.get("/v1/node/models/search/**") { _, context -> Response in
+            let captured = context.parameters.getCatchAll().joined(separator: "/")
+            guard captured.hasSuffix("/files") else {
+                return try Self.error("not found", status: .notFound)
+            }
+            let repoId = String(captured.dropLast("/files".count))
+            return try Self.json(await ModelRoutes.repoFiles(repoId: repoId))
+        }
+
         // ── Downloads ──
         //
         // Node parity: the Python node can fetch a model it doesn't have, and
@@ -225,12 +396,37 @@ actor HTTPServer {
             let format = (body["format"] as? String)
                 ?? (filename?.isEmpty == false ? "gguf" : "mlx")
 
+            // ⚠️ A CONFIRMATION DIALOG CANNOT GATE THIS. The obvious answer to
+            // "don't spend a user's cellular data on a 4 GB model" is a scary
+            // modal, and it does not work here: this is an API, and the caller
+            // is the dashboard, a fleet tool or a script, with nobody at the
+            // device to tap anything. So the node enforces the policy itself
+            // and reports a refusal the caller can act on — which is also
+            // exactly what the UI needs to render a confirmation with the real
+            // number in it.
+            let allowExpensive = (body["allow_expensive"] as? Bool) ?? false
+            let decision = DownloadPolicy.decide(
+                connectivity: nodeService.connectivity, override: allowExpensive)
+
             if format == "gguf" {
                 guard let filename, !filename.isEmpty else {
                     return try Self.error("filename required for gguf downloads")
                 }
+                if case .refused(let network) = decision {
+                    // GGUF size isn't known without a HEAD; report 0 rather than
+                    // guess, and let the message carry the reason.
+                    return try Self.json([
+                        "error": [
+                            "code": "expensive_network",
+                            "network": network,
+                            "estimated_bytes": 0,
+                            "message": DownloadPolicy.refusalMessage(network: network, bytes: 0),
+                        ] as [String: Any],
+                    ], status: .conflict)
+                }
                 await MainActor.run {
-                    nodeService.modelDownloader.download(repoId: repoId, filename: filename)
+                    nodeService.modelDownloader.download(
+                        repoId: repoId, filename: filename, allowExpensive: allowExpensive)
                 }
                 return try Self.json([
                     "status": "downloading", "repo_id": repoId,
@@ -250,9 +446,25 @@ actor HTTPServer {
                     return try Self.error(MLXRepo.Failure
                         .insufficientSpace(needed: total, free: free).localizedDescription)
                 }
+                // Refused *after* planning, so the caller is told how big the
+                // thing it asked for actually is — the number is the whole
+                // point of refusing out loud instead of just failing. The plan
+                // fetch is a few hundred bytes of JSON and is not itself
+                // subject to the policy.
+                if case .refused(let network) = decision {
+                    return try Self.json([
+                        "error": [
+                            "code": "expensive_network",
+                            "network": network,
+                            "estimated_bytes": total,
+                            "message": DownloadPolicy.refusalMessage(network: network, bytes: total),
+                        ] as [String: Any],
+                    ], status: .conflict)
+                }
                 let name = body["name"] as? String
                 let id = await MainActor.run {
-                    nodeService.modelDownloader.downloadRepo(repoId: repoId, name: name)
+                    nodeService.modelDownloader.downloadRepo(
+                        repoId: repoId, name: name, allowExpensive: allowExpensive)
                 }
                 return try Self.json([
                     "status": "downloading",
@@ -295,13 +507,37 @@ actor HTTPServer {
             ])
         }
 
-        router.post("/v1/node/models/download/cancel") { request, _ -> Response in
+        // ⚠️ THE CANONICAL PATH IS `downloads/abort`, NOT `download/cancel`.
+        // Python has served `POST /v1/node/models/downloads/abort` since the
+        // route existed; iOS shipped `download/cancel` for the same operation,
+        // so the dashboard's cancel button did nothing against an iOS node —
+        // a 404 the UI had no reason to expect. The Python spelling wins
+        // because it is the one every other node and client already uses.
+        //
+        // The old path stays registered as a deprecated alias: it shipped in
+        // build 18, and silently 404ing a client that already adopted it would
+        // trade one broken cancel button for another.
+        let abortDownload: @Sendable (Request) async throws -> Response = { request in
             let body = try await Self.parseBody(request)
             guard let idString = body["download_id"] as? String, let id = UUID(uuidString: idString) else {
                 return try Self.error("download_id required")
             }
+            let known = await MainActor.run {
+                nodeService.modelDownloader.repoDownloads.contains { $0.id == id }
+            }
+            guard known else {
+                return try Self.error("Unknown download_id", status: .notFound)
+            }
             await MainActor.run { nodeService.modelDownloader.cancelRepo(id: id) }
-            return try Self.json(["status": "cancelled", "download_id": idString])
+            return try Self.json(["status": "aborted", "download_id": idString])
+        }
+
+        router.post("/v1/node/models/downloads/abort") { request, _ -> Response in
+            try await abortDownload(request)
+        }
+
+        router.post("/v1/node/models/download/cancel") { request, _ -> Response in
+            try await abortDownload(request)
         }
 
         // ── Model Management ──
@@ -429,6 +665,115 @@ actor HTTPServer {
             return try Self.error("Model not loaded: \(modelName)", status: .notFound)
         }
 
+        router.post("/v1/node/models/load-status/clear") { request, _ -> Response in
+            let body = try await Self.parseBody(request)
+            let name = body["model"] as? String ?? ""
+            let mm = nodeService.modelManager
+            // Only a failed entry is clearable — the tracker's other states are
+            // derived from what is actually loaded, so "clearing" a loaded
+            // model would just report a lie until the next poll rebuilt it.
+            guard !name.isEmpty, mm.loadError != nil, mm.loadingModelName == name else {
+                return try Self.error("not found", status: .notFound)
+            }
+            await MainActor.run { mm.clearLoadError() }
+            return try Self.json(["status": "cleared", "model": name])
+        }
+
+        // GET /v1/node/models/{model_name}/config — the config behind an edit
+        // form. API keys are never returned, only a last-four hint.
+        router.get("/v1/node/models/:model_name/config") { _, context -> Response in
+            let name = context.parameters.get("model_name").map { String($0) } ?? ""
+            let mm = nodeService.modelManager
+            guard let model = mm.loadedModels.first(where: { $0.name == name || $0.filename == name })
+            else {
+                return try Self.error("model not found", status: .notFound)
+            }
+
+            var result: [String: Any] = [
+                "name": model.name,
+                "backend": model.backend,
+                "ctx_len": model.contextLength,
+            ]
+            if let config = mm.savedAPIConfigs().first(where: { $0.name == model.name }) {
+                result["backend"] = "openai"
+                result["api_base"] = config.apiBase
+                result["api_model"] = config.apiModel
+                result["ctx_len"] = config.ctxLen
+                result["api_key_hint"] = config.apiKey.count > 4
+                    ? "...\(String(config.apiKey.suffix(4)))"
+                    : ""
+            }
+            return try Self.json(result)
+        }
+
+        // POST /v1/node/models/update — merge overrides into a saved config and
+        // reload. Only saved (openai-backend) configs are updatable; a local
+        // GGUF/MLX file has no config to merge, which is why Python looks the
+        // model up in _saved_configs and errors when it isn't there.
+        router.post("/v1/node/models/update") { request, _ -> Response in
+            let body = try await Self.parseBody(request)
+            let name = body["model"] as? String ?? ""
+            guard !name.isEmpty else { return try Self.error("model name required") }
+
+            let mm = nodeService.modelManager
+            guard let existing = mm.savedAPIConfigs().first(where: { $0.name == name }) else {
+                return try Self.error("No config for '\(name)'", status: .notFound)
+            }
+
+            // Omitted fields keep their current values — an edit form that
+            // sends only the changed field must not blank the rest.
+            let apiBase = (body["api_base"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? existing.apiBase
+            let apiModel = (body["api_model"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? existing.apiModel
+            let apiKey = (body["api_key"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? existing.apiKey
+            let ctxLen = (body["ctx_len"] as? Int).flatMap { $0 > 0 ? $0 : nil } ?? existing.ctxLen
+
+            if let loaded = mm.loadedModels.first(where: { $0.name == name }) {
+                await mm.unloadModel(loaded)
+            }
+            do {
+                try await mm.loadAPIModel(
+                    name: name, apiBase: apiBase, apiKey: apiKey,
+                    apiModel: apiModel, ctxLen: ctxLen
+                )
+                return try Self.json(["status": "updated", "model": name])
+            } catch {
+                return try Self.error(error.localizedDescription)
+            }
+        }
+
+        // POST /v1/node/models/reload — re-load a saved config that was unloaded.
+        router.post("/v1/node/models/reload") { request, _ -> Response in
+            let body = try await Self.parseBody(request)
+            let name = body["model"] as? String ?? ""
+            guard !name.isEmpty else { return try Self.error("model name required") }
+
+            let mm = nodeService.modelManager
+            if let config = mm.savedAPIConfigs().first(where: { $0.name == name }) {
+                do {
+                    try await mm.loadAPIModel(
+                        name: config.name, apiBase: config.apiBase, apiKey: config.apiKey,
+                        apiModel: config.apiModel, ctxLen: config.ctxLen
+                    )
+                    return try Self.json(["status": "loaded", "model": name, "backend": "openai"])
+                } catch {
+                    return try Self.error(error.localizedDescription)
+                }
+            }
+
+            // Local files have no saved config, but "reload this model" is still
+            // a meaningful request for one — Python reaches the same outcome via
+            // a saved config carrying model_path. Falling back to the on-disk
+            // file keeps the endpoint useful on a device, where local files are
+            // the common case rather than the exception.
+            guard let file = mm.localFiles.first(where: { $0.filename == name || $0.path == name })
+            else {
+                return try Self.error("No saved config for '\(name)'", status: .notFound)
+            }
+            Task { try? await mm.loadModel(file: file) }
+            let detected = ModelFormat.detect(path: file.path) == .mlx ? "mlx" : "llama.cpp"
+            return try Self.json(["status": "loading", "model": file.filename, "backend": detected])
+        }
+
         router.post("/v1/node/models/remove-config") { request, _ -> Response in
             let body = try await Self.parseBody(request)
             let name = body["model"] as? String ?? ""
@@ -509,6 +854,32 @@ actor HTTPServer {
                 "tier": tier, "label": label, "access": access, "balance": balance,
                 "receipts": receipts,
                 "thresholds": ["free": 0, "contributor": 10, "power": 50] as [String: Any]
+            ])
+        }
+
+        // GET /v1/node/credits/networks — per-network authoritative balances.
+        //
+        // These come from the tracker (the source of truth) and are cached on
+        // device by `reconcileTrackerCredits`, so this reads the cache rather
+        // than re-querying — a dashboard poll must not fan out to the tracker.
+        router.get("/v1/node/credits/networks") { _, _ -> Response in
+            let balances = nodeService.stats.networkBalances
+            return try Self.json([
+                "networks": balances.map { b in
+                    [
+                        "network_id": b.networkId,
+                        "label": b.networkId.isEmpty ? "default" : b.networkId,
+                        "balance": b.balance,
+                        "earned": b.earned,
+                        "spent": b.spent,
+                        "tracked": true,
+                    ] as [String: Any]
+                },
+                "aggregate": [
+                    "balance": balances.reduce(0) { $0 + $1.balance },
+                    "earned": balances.reduce(0) { $0 + $1.earned },
+                    "spent": balances.reduce(0) { $0 + $1.spent },
+                ] as [String: Any],
             ])
         }
 

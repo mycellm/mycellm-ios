@@ -88,6 +88,113 @@ enum ModelRoutes {
     /// The search endpoint doesn't return file listings, so details are fetched
     /// for the top results to find out whether a repo actually contains weights
     /// we can use.
+    /// GET /v1/node/models/search/{repo_id}/files — the installable variants in
+    /// a Hugging Face repo.
+    ///
+    /// Two layouts, matching Python's: one or more `.gguf` files at the repo
+    /// root (each an independent variant, llama.cpp), or a directory of
+    /// `.safetensors` shards plus `config.json` (MLX — the *whole repo* is one
+    /// variant, which is why its entry carries an empty `filename`; downloading
+    /// a single shard would produce an unusable model).
+    ///
+    /// Warnings are computed against this device's real free space and RAM, so
+    /// a picker can grey out a 7B Q8 on an 8 GB iPhone before the user commits
+    /// to a multi-gigabyte download.
+    static func repoFiles(repoId: String) async -> [String: Any] {
+        guard !repoId.isEmpty,
+              let encoded = repoId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
+              let treeURL = URL(string: "https://huggingface.co/api/models/\(encoded)/tree/main")
+        else { return ["error": "repo_id required", "files": []] }
+
+        guard let (data, response) = try? await URLSession.shared.data(from: treeURL),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let tree = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]
+        else { return ["error": "Could not read repo '\(repoId)'", "files": []] }
+
+        let diskFree = MLXRepo.freeBytes()
+        let ramGB = HardwareInfo.totalMemoryGB
+
+        func warnings(forBytes size: Int64) -> [String] {
+            var out: [String] = []
+            let estRamGB = Double(size) / 1_073_741_824.0 * 1.2
+            if size > 0, diskFree > 0, size > diskFree {
+                out.append(String(
+                    format: "Insufficient disk space (%.1fGB free, need %.1fGB)",
+                    Double(diskFree) / 1_073_741_824.0, Double(size) / 1_073_741_824.0))
+            }
+            if estRamGB > 0, ramGB > 0, estRamGB > ramGB * 0.8 {
+                out.append(String(
+                    format: "May need more RAM (%.1fGB needed, %.1fGB available)", estRamGB, ramGB))
+            }
+            return out
+        }
+
+        func size(of entry: [String: Any]) -> Int64 {
+            if let s = entry["size"] as? Int64, s > 0 { return s }
+            if let s = entry["size"] as? Int, s > 0 { return Int64(s) }
+            if let lfs = entry["lfs"] as? [String: Any] {
+                if let s = lfs["size"] as? Int64 { return s }
+                if let s = lfs["size"] as? Int { return Int64(s) }
+            }
+            return 0
+        }
+
+        var files: [[String: Any]] = []
+        var safetensorsBytes: Int64 = 0
+        var hasSafetensors = false
+        var hasConfig = false
+
+        for entry in tree {
+            let path = entry["path"] as? String ?? ""
+            if path == "config.json" { hasConfig = true; continue }
+            if path.hasSuffix(".safetensors") {
+                hasSafetensors = true
+                safetensorsBytes += size(of: entry)
+                continue
+            }
+            guard path.hasSuffix(".gguf") else { continue }
+
+            let bytes = size(of: entry)
+            files.append([
+                "filename": path,
+                "format": "gguf",
+                "backend": "llama.cpp",
+                "size_bytes": bytes,
+                "size_gb": (Double(bytes) / 1_073_741_824.0 * 100).rounded() / 100,
+                "quant": quantLabel(from: path),
+                "est_ram_gb": (Double(bytes) / 1_073_741_824.0 * 1.2 * 10).rounded() / 10,
+                "warnings": warnings(forBytes: bytes),
+            ])
+        }
+
+        if hasConfig, hasSafetensors, files.isEmpty {
+            files.append([
+                "filename": "",
+                "format": "mlx",
+                "backend": "mlx",
+                "size_bytes": safetensorsBytes,
+                "size_gb": (Double(safetensorsBytes) / 1_073_741_824.0 * 100).rounded() / 100,
+                "quant": quantLabel(from: repoId),
+                "est_ram_gb": (Double(safetensorsBytes) / 1_073_741_824.0 * 1.2 * 10).rounded() / 10,
+                "warnings": warnings(forBytes: safetensorsBytes),
+            ])
+        }
+
+        return ["repo_id": repoId, "files": files]
+    }
+
+    /// Pull a quantisation label out of a filename or repo id — `Q4_K_M`,
+    /// `IQ3_XS`, `f16`. Mirrors the regex Python uses.
+    static func quantLabel(from name: String) -> String {
+        let pattern = "[._-](Q\\d[_A-Z0-9]*|[Ff]16|[Ff]32|IQ\\d[_A-Z0-9]*)"
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(
+                in: name, range: NSRange(name.startIndex..., in: name)),
+              let range = Range(match.range(at: 1), in: name)
+        else { return "" }
+        return String(name[range])
+    }
+
     static func searchHuggingFace(query: String, format: String = "mlx") async -> [[String: Any]] {
         let wantsMLX = format.lowercased() != "gguf"
         let tag = wantsMLX ? "mlx" : "gguf"
