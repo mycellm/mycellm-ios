@@ -73,10 +73,43 @@ final class ModelManager: @unchecked Sendable {
     #endif
 
     /// Models directory in app's Documents.
+    /// Guards the one-shot backup-exclusion repair below.
+    nonisolated(unsafe) private static var didExcludeModelsDirectory = false
+
     static var modelsDirectory: URL {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
         let dir = docs.appendingPathComponent("models", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+
+        // ⚠️ EXCLUDED AT THE DIRECTORY, NOT JUST PER FILE. Three download and
+        // import paths each set `isExcludedFromBackup` on what they produced,
+        // which covered finished models and nothing else:
+        //
+        //   • `.staging/` — a multi-gigabyte shard set mid-download was fully
+        //     backup-eligible, so a backup running during a download uploaded
+        //     partial weights.
+        //   • Side-loaded models — the app enables file sharing precisely so
+        //     users can drop MLX directories in via Files, and nothing on that
+        //     path marks them.
+        //   • Any future path that forgets.
+        //
+        // These live in Documents, which iOS backs up by default, so the cost
+        // was a user's iCloud quota filled with weights they can re-download in
+        // minutes — and it is the exact thing the iOS Data Storage Guidelines
+        // exist to stop, so it is also an App Store review risk. Excluding the
+        // directory covers the whole subtree, including files this code never
+        // touches. The per-file marks stay as belt and braces.
+        //
+        // Repaired once per process rather than on every access: this property
+        // is read on every model scan, and `setResourceValues` is a syscall.
+        // Existing installs are fixed on first read after updating.
+        if !didExcludeModelsDirectory {
+            didExcludeModelsDirectory = true
+            var mutable = dir
+            var values = URLResourceValues()
+            values.isExcludedFromBackup = true
+            try? mutable.setResourceValues(values)
+        }
         return dir
     }
 
@@ -196,6 +229,16 @@ final class ModelManager: @unchecked Sendable {
         await engine.unloadModel()
         loadedModels.removeAll { $0.id == model.id }
         scanLocalModels()
+    }
+
+    /// Dismiss a failed load so it stops being reported by
+    /// `/v1/node/models/load-status`. Mirrors Python's
+    /// `POST /models/load-status/clear`, which deletes the entry from its load
+    /// tracker — a failure that can't be dismissed pins a red row in the
+    /// dashboard until the process restarts.
+    func clearLoadError() {
+        loadError = nil
+        loadingModelName = nil
     }
 
     /// Set model scope (home/public/networks). Preserves capability metadata

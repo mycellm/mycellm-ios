@@ -33,9 +33,15 @@ import NIOCore
 ///
 struct NodeAuth: Sendable {
 
-    /// Public in the Python sense: no key required, ever.
+    /// Public in the Python sense: no key required, ever. `/metrics` is on this
+    /// list because `_PUBLIC_PATHS` in `api/app.py` has it — a scrape target
+    /// that needs a credential is a scrape target nobody configures.
+    ///
+    /// This set is only consulted to carve exceptions *out of*
+    /// `protectedPrefixes`; a path that matches no protected prefix is already
+    /// open, which is why `/v1/models/{id}` needs no entry here.
     private static let publicPaths: Set<String> = [
-        "/health", "/v1/models", "/v1/models/capabilities",
+        "/health", "/metrics", "/v1/models", "/v1/models/capabilities",
         "/v1/chat/completions", "/v1/completions", "/v1/embeddings",
     ]
 

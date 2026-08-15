@@ -1,0 +1,80 @@
+appId: com.mycellm.app
+---
+# Verification pass over the Settings screen and the Network view.
+#
+# ⚠️ THIS EXISTS BECAUSE `xcodebuild test` WAS GREEN THROUGH THREE UI DEFECTS.
+# A double disclosure chevron, a peer count hardcoded to zero, and a section
+# gate that never re-evaluated all shipped past a passing suite, because none of
+# them are reachable from a unit test — they are only visible on screen. This
+# flow drives the two screens that carry most of the app's configuration surface
+# and screenshots each region, so a defect of that shape gets caught before a
+# build goes out rather than by whoever opens the app next.
+
+- launchApp:
+    clearState: false
+
+# First launch after install can sit on the splash while identity and models
+# resolve; the tab bar is the signal that the app is actually up.
+- extendedWaitUntil:
+    visible: "Settings"
+    timeout: 45000
+
+- tapOn: "Settings"
+- assertVisible: "Identity"
+- takeScreenshot: settings-01-top
+
+# The Network section used to live here as a pointer row and was removed —
+# Settings should go straight from Node to Chat.
+- assertNotVisible: "Manage in Network tab"
+
+- scrollUntilVisible:
+    element:
+      text: "Privacy Guard"
+    direction: DOWN
+    timeout: 20000
+- takeScreenshot: settings-02-privacy
+
+# Rules row: one disclosure chevron, drawn by NavigationLink. The label must not
+# add a second.
+- assertVisible: "Rules"
+
+- scrollUntilVisible:
+    element:
+      text: "Local API Server"
+    direction: DOWN
+    timeout: 20000
+- takeScreenshot: settings-03-localapi
+
+# The management key and its controls are unconditional now: the server can be
+# started by network mode with the toggle off, and the gate that used to hide
+# these never re-evaluated anyway.
+- assertVisible: "API Key"
+- assertVisible: "Port"
+- assertVisible:
+    text: ".*generate Key"   # "Generate Key" or "Regenerate Key"
+
+- scrollUntilVisible:
+    element:
+      text: "Downloads"
+    direction: DOWN
+    timeout: 20000
+- assertVisible: "Allow on Cellular"
+- takeScreenshot: settings-04-downloads
+
+- scrollUntilVisible:
+    element:
+      text: "About"
+    direction: DOWN
+    timeout: 20000
+# Moved out of the footer, where they read as fine print rather than controls.
+- assertVisible: "Privacy Policy"
+- assertVisible: "Terms of Service"
+- takeScreenshot: settings-05-about
+
+# Network view: the This Device card and a peer list fed by real data.
+- tapOn: "Network"
+- extendedWaitUntil:
+    visible: "This Device"
+    timeout: 20000
+- assertVisible: "Networks"
+- takeScreenshot: network-01-thisdevice

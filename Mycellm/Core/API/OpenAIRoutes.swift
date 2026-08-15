@@ -21,6 +21,35 @@ enum OpenAIRoutes {
         return ["object": "list", "data": models]
     }
 
+    // MARK: - /v1/models/{model_id} (retrieve one)
+
+    /// Retrieve a single model. Returns nil when the id is unknown, which the
+    /// router turns into a 404 — OpenAI clients treat a 200-with-error as a
+    /// successful retrieval and carry on with a model that isn't there.
+    ///
+    /// `auto` is virtual: Python answers for it whenever anything is reachable,
+    /// because it is the name a client sends to mean "you pick". An iOS node
+    /// with no model loaded cannot serve it, so it is reported only when a
+    /// model is actually loaded.
+    static func retrieveModel(id: String, manager: ModelManager) -> [String: Any]? {
+        let now = Int(Date().timeIntervalSince1970)
+
+        if id == "auto" {
+            guard !manager.loadedModels.isEmpty else { return nil }
+            return ["id": "auto", "object": "model", "created": now, "owned_by": "mycellm"]
+        }
+
+        guard let model = manager.loadedModels.first(where: { $0.name == id || $0.filename == id })
+        else { return nil }
+
+        return [
+            "id": model.name,
+            "object": "model",
+            "created": Int(model.loadedAt.timeIntervalSince1970),
+            "owned_by": "local",
+        ]
+    }
+
     // MARK: - /v1/models/capabilities (rich per-model metadata)
 
     /// Rich per-model metadata. New in v0.3.0: surfaces `supports_thinking`
@@ -39,9 +68,113 @@ enum OpenAIRoutes {
                 "features": ["streaming"],
                 "supports_grammar": model.backend == "llama.cpp",
                 "supports_thinking": ReasoningDialects.supportsThinking(model.name),
+                // Advertised so a client can route an embeddings request to a
+                // node that can serve it instead of discovering it can't by
+                // getting a 400 back — which is exactly why this has to honour
+                // `embeddingsEnabled` and not just "is it an embedding model on
+                // the right backend". Reporting true while the execution path
+                // is gated off would send every embeddings client here to fail.
+                "supports_embeddings": LlamaCppBackend.embeddingsEnabled
+                    && model.backend == "llama.cpp"
+                    && EmbeddingModels.isEmbeddingModel(model.name),
+                "tags": EmbeddingModels.tags(for: model.name),
             ]
         }
         return ["models": models]
+    }
+
+    // MARK: - /v1/embeddings
+
+    /// POST /v1/embeddings request body.
+    struct EmbeddingsRequest: Codable, Sendable {
+        var model: String = ""
+        var input: EmbeddingInput? = nil
+
+        init(model: String = "", input: EmbeddingInput? = nil) {
+            self.model = model
+            self.input = input
+        }
+
+        /// ⚠️ HAND-WRITTEN BECAUSE SYNTHESISED `Codable` IGNORES DEFAULT VALUES.
+        /// `{"input": "hello"}` is a valid request — Python's `model` defaults
+        /// to `""` — but the synthesised decoder treats a missing key for a
+        /// non-optional `String` as `keyNotFound` and throws; the property's
+        /// default is never consulted. The whole body then failed to decode and
+        /// the route answered with the token-array error, which is both wrong
+        /// and impossible for a caller to act on. Every field is optional on
+        /// the wire, exactly as it is in Python's pydantic model.
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            self.model = try c.decodeIfPresent(String.self, forKey: .model) ?? ""
+            self.input = try c.decodeIfPresent(EmbeddingInput.self, forKey: .input)
+        }
+    }
+
+    /// The `input` field: a string, or a list of strings.
+    ///
+    /// ⚠️ UNPARSEABLE INPUT DECODES TO `.unsupported` RATHER THAN THROWING.
+    /// OpenAI also allows token arrays (`[Int]`/`[[Int]]`), which local
+    /// backends can't take because they tokenize text themselves. If this
+    /// rejected them at the decoder, the whole request body would fail to
+    /// decode and the client would get a generic parse error — where Python
+    /// answers with a specific `invalid_input` explaining to send strings.
+    /// Carrying the failure as a case preserves that message.
+    enum EmbeddingInput: Codable, Sendable {
+        case text(String)
+        case texts([String])
+        case unsupported
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.singleValueContainer()
+            if let s = try? c.decode(String.self) {
+                self = .text(s)
+            } else if let a = try? c.decode([String].self) {
+                self = .texts(a)
+            } else {
+                self = .unsupported
+            }
+        }
+
+        func encode(to encoder: Encoder) throws {
+            var c = encoder.singleValueContainer()
+            switch self {
+            case .text(let s): try c.encode(s)
+            case .texts(let a): try c.encode(a)
+            case .unsupported: try c.encodeNil()
+            }
+        }
+
+        /// The texts to embed, or nil when the input form isn't supported.
+        var texts: [String]? {
+            switch self {
+            case .text(let s): [s]
+            case .texts(let a): a
+            case .unsupported: nil
+            }
+        }
+    }
+
+    /// OpenAI error envelope. Python returns this shape for every embeddings
+    /// failure and clients branch on `error.code`, so a plain `{"error": "..."}`
+    /// — what the rest of this node's routes return — would not be readable by
+    /// an OpenAI SDK.
+    static func errorBody(_ message: String, type: String, code: String) -> [String: Any] {
+        ["error": ["message": message, "type": type, "code": code]]
+    }
+
+    /// Build the success body for an embeddings response.
+    static func embeddingsBody(_ result: EmbeddingResult, model: String) -> [String: Any] {
+        [
+            "object": "list",
+            "data": result.embeddings.enumerated().map { i, vector in
+                ["object": "embedding", "index": i, "embedding": vector] as [String: Any]
+            },
+            "model": model,
+            "usage": [
+                "prompt_tokens": result.totalTokens,
+                "total_tokens": result.totalTokens,
+            ] as [String: Any],
+        ]
     }
 
     // MARK: - Request / Response shapes

@@ -216,6 +216,24 @@ actor InferenceEngine {
         state = .ready(currentModel ?? "")
     }
 
+    // MARK: - Embeddings
+
+    /// Embed texts with the loaded model. Throws
+    /// `MycellmError.embeddingsNotSupported` when nothing loaded can embed —
+    /// which `/v1/embeddings` turns into the same OpenAI error body Python
+    /// returns, rather than a generic 500.
+    func embed(_ texts: [String]) async throws -> EmbeddingResult {
+        guard let backend else {
+            throw MycellmError.modelNotLoaded("No model loaded")
+        }
+        return try await backend.embed(texts)
+    }
+
+    /// Whether the loaded model can embed. False when nothing is loaded.
+    var supportsEmbeddings: Bool {
+        get async { await backend?.supportsEmbeddings ?? false }
+    }
+
     // MARK: - Context Reset
 
     func resetContext() throws {

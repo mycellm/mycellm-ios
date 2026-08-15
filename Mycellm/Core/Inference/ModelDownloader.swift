@@ -25,6 +25,20 @@ final class ModelDownloader: NSObject, @unchecked Sendable, URLSessionDownloadDe
         let id = UUID()
         let repoId: String
         let filename: String
+        /// Where the bytes came from, and how to prove they are the right ones.
+        ///
+        /// ⚠️ AN ARBITRARY URL IS THE ONE PATH WITH NO PUBLISHED HASH TO CHECK
+        /// AGAINST. Hugging Face downloads verify against the tree API's
+        /// `lfs.oid`, so the node can always tell whether it got the file it
+        /// asked for. A URL an admin supplies has no such attestation, which
+        /// would make it the only way to put unverified weights on a device.
+        /// So the digest is not optional there — the caller commits to a
+        /// sha256 up front and the download is checked against it.
+        enum Origin: Sendable, Equatable {
+            case huggingFace
+            case url(String, sha256: String)
+        }
+        var origin: Origin = .huggingFace
         var progress: Double = 0.0
         var bytesDownloaded: Int64 = 0
         var totalBytes: Int64 = 0
@@ -119,10 +133,53 @@ final class ModelDownloader: NSObject, @unchecked Sendable, URLSessionDownloadDe
     /// remote download exists to avoid needing.
     @MainActor var onModelsChanged: (@MainActor () -> Void)?
 
-    /// Fetch an MLX repo. Returns the download id so the HTTP caller can poll it.
+    /// Install an MLX model from a manifest — the directory-shaped counterpart
+    /// to a single-URL GGUF install. Same staging, resume and publish path as a
+    /// Hugging Face repo; only the source and verification differ.
     @discardableResult
     @MainActor
-    func downloadRepo(repoId: String, name: String? = nil) -> UUID {
+    func downloadManifest(assets: [MLXRepo.Asset], name: String, allowExpensive: Bool = false) -> UUID {
+        if let existing = repoDownloads.first(where: {
+            $0.name == name && ($0.state == .downloading || $0.state == .pending)
+        }) {
+            return existing.id
+        }
+        var dl = RepoDownload(repoId: "manifest", name: name)
+        dl.state = .downloading
+        dl.startTime = Date()
+        repoDownloads.append(dl)
+        let id = dl.id
+
+        repoTasks[id] = Task { [weak self] in
+            do {
+                try await MLXRepo.download(
+                    manifest: assets, name: name, allowExpensive: allowExpensive
+                ) { done, total in
+                    Task { @MainActor in self?.updateRepo(id, done: done, total: total) }
+                }
+                guard let self, let i = repoDownloads.firstIndex(where: { $0.id == id }) else { return }
+                repoDownloads[i].state = .completed
+                repoDownloads[i].progress = 1.0
+                repoTasks[id] = nil
+                onModelsChanged?()
+            } catch {
+                let cancelled = error is CancellationError
+                    || (error as NSError).code == NSURLErrorCancelled
+                if cancelled { MLXRepo.discardStaging(name: name) }
+                guard let self, let i = repoDownloads.firstIndex(where: { $0.id == id }) else { return }
+                repoDownloads[i].state = cancelled ? .cancelled : .failed
+                repoDownloads[i].error = cancelled ? nil : error.localizedDescription
+                repoTasks[id] = nil
+            }
+        }
+        return id
+    }
+
+    /// Fetch an MLX repo from Hugging Face. Returns the download id so the
+    /// HTTP caller can poll it.
+    @discardableResult
+    @MainActor
+    func downloadRepo(repoId: String, name: String? = nil, allowExpensive: Bool = false) -> UUID {
         let dirName = name ?? MLXRepo.directoryName(for: repoId)
 
         // Re-requesting something already running is a resume in the user's
@@ -145,7 +202,9 @@ final class ModelDownloader: NSObject, @unchecked Sendable, URLSessionDownloadDe
         // since MLXRepo calls it from whatever context the transfer is on.
         repoTasks[id] = Task { [weak self] in
             do {
-                try await MLXRepo.download(repoId: repoId, name: dirName) { done, total in
+                try await MLXRepo.download(
+                    repoId: repoId, name: dirName, allowExpensive: allowExpensive
+                ) { done, total in
                     Task { @MainActor in self?.updateRepo(id, done: done, total: total) }
                 }
                 guard let self, let i = repoDownloads.firstIndex(where: { $0.id == id }) else { return }
@@ -193,8 +252,32 @@ final class ModelDownloader: NSObject, @unchecked Sendable, URLSessionDownloadDe
         repoDownloads.removeAll { $0.id == id }
     }
 
+    /// Fetch a model from an arbitrary URL, verified against a caller-supplied
+    /// digest. For models that aren't on Hugging Face — an internal mirror, a
+    /// private build — coordinated by whoever holds the node's management key.
+    func download(url urlString: String, filename: String, sha256: String, allowExpensive: Bool = false) {
+        guard let url = URL(string: urlString) else { return }
+
+        var dl = Download(repoId: url.host ?? "url", filename: filename)
+        dl.origin = .url(urlString, sha256: sha256.lowercased())
+        dl.state = .downloading
+        dl.startTime = Date()
+
+        let task = session.downloadTask(
+            with: DownloadPolicy.request(for: url, override: allowExpensive))
+        dl.task = task
+        tasks[task.taskIdentifier] = dl.id
+        activeDownloads.append(dl)
+        task.resume()
+    }
+
     /// Start downloading a GGUF file from HuggingFace.
-    func download(repoId: String, filename: String) {
+    ///
+    /// `allowExpensive` is the caller's one-shot opt-in to a metered path; the
+    /// standing preference is consulted by `DownloadPolicy` either way. The
+    /// request carries the decision so URLSession enforces it even if a caller
+    /// skipped the pre-check.
+    func download(repoId: String, filename: String, allowExpensive: Bool = false) {
         let urlString = "https://huggingface.co/\(repoId)/resolve/main/\(filename)"
         guard let url = URL(string: urlString) else { return }
 
@@ -202,7 +285,8 @@ final class ModelDownloader: NSObject, @unchecked Sendable, URLSessionDownloadDe
         dl.state = .downloading
         dl.startTime = Date()
 
-        let task = session.downloadTask(with: url)
+        let task = session.downloadTask(
+            with: DownloadPolicy.request(for: url, override: allowExpensive))
         dl.task = task
         tasks[task.taskIdentifier] = dl.id
         activeDownloads.append(dl)
@@ -293,13 +377,25 @@ final class ModelDownloader: NSObject, @unchecked Sendable, URLSessionDownloadDe
             // Unreachable tree API → unverified but accepted (offline-safe);
             // a hash mismatch deletes the file and fails the download.
             let repoId = activeDownloads[idx].repoId
+            let origin = activeDownloads[idx].origin
             DispatchQueue.main.async { [self] in
                 guard let idx = activeDownloads.firstIndex(where: { $0.id == dlId }) else { return }
                 activeDownloads[idx].state = .verifying
                 activeDownloads[idx].progress = 1.0
             }
             Task { [weak self] in
-                let expected = await HFVerify.fetchExpectedHash(repoId: repoId, filename: filename)
+                let expected: HFVerify.Expected?
+                switch origin {
+                case .huggingFace:
+                    // Advisory: an unreachable tree API must not stop an
+                    // otherwise-good download, since the node has to work
+                    // offline-ish. A mismatch is still fatal.
+                    expected = await HFVerify.fetchExpectedHash(repoId: repoId, filename: filename)
+                case .url(_, let sha256):
+                    // ⚠️ NOT ADVISORY. There is no second source to fall back
+                    // on, so an unverifiable URL download is a failed one.
+                    expected = HFVerify.Expected(algo: "sha256", hex: sha256)
+                }
                 let ok = (try? HFVerify.verify(file: destination, expected: expected, filename: filename)) != nil
                 await MainActor.run { [weak self] in
                     guard let self, let idx = self.activeDownloads.firstIndex(where: { $0.id == dlId }) else { return }

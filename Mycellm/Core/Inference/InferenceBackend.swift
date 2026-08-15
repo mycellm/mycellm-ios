@@ -110,6 +110,15 @@ struct InferenceResult: Sendable {
     }
 }
 
+/// Result of an embeddings request — one vector per input, in input order.
+struct EmbeddingResult: Sendable {
+    let embeddings: [[Double]]
+    /// Prompt tokens consumed across every input. `/v1/embeddings` reports this
+    /// as both `prompt_tokens` and `total_tokens`, as Python does — an
+    /// embedding request generates nothing, so the two are equal by definition.
+    let totalTokens: Int
+}
+
 /// Protocol for pluggable inference backends.
 /// Each backend handles one model format and provides the same interface.
 protocol InferenceBackend: Actor {
@@ -151,6 +160,17 @@ protocol InferenceBackend: Actor {
         tools: [OpenAIRoutes.Tool]
     ) -> AsyncThrowingStream<String, Error>
 
+    /// Embed one or more texts. Backends that cannot embed inherit the default
+    /// below, which throws `MycellmError.embeddingsNotSupported` — the same
+    /// distinction Python draws between "no embedding model loaded" and "this
+    /// backend has no embedding path at all".
+    func embed(_ texts: [String]) async throws -> EmbeddingResult
+
+    /// True when `embed` can succeed with the currently loaded model. Reported
+    /// on `/v1/models/capabilities` so a client can pick an embedding-capable
+    /// node before sending a request that would only fail.
+    var supportsEmbeddings: Bool { get }
+
     /// Reset context (clear KV cache) without unloading the model.
     func resetContext() throws
 
@@ -181,6 +201,15 @@ protocol InferenceBackend: Actor {
 // makes the new requirements opt-in — LlamaCppBackend and the MLX text path
 // inherit these unchanged; only MLXBackend overrides them for real VLM input.
 extension InferenceBackend {
+    /// Default: no embedding path. Overridden by LlamaCppBackend.
+    var supportsEmbeddings: Bool { false }
+
+    func embed(_ texts: [String]) async throws -> EmbeddingResult {
+        throw MycellmError.embeddingsNotSupported(
+            "the \(backendName) backend has no embedding path"
+        )
+    }
+
     func complete(
         multimodal messages: [MultimodalMessage],
         temperature: Double,

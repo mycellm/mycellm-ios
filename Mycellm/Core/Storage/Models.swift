@@ -64,8 +64,15 @@ final class ChatSession {
     var createdAt: Date = Date()
     var updatedAt: Date = Date()
     var model: String = ""
+    /// ⚠️ OPTIONAL BECAUSE CLOUDKIT DEMANDS IT. "CloudKit integration requires
+    /// that all relationships be optional" — a non-optional to-many is rejected
+    /// at store load, and SwiftData surfaces that as the whole container
+    /// failing to open rather than as a schema warning. With sync enabled the
+    /// app could not start at all. `[ChatMessage] = []` looks like it satisfies
+    /// the rule because it has a default; it does not. The type has to be
+    /// optional, hence `?? []` at every read site.
     @Relationship(deleteRule: .cascade, inverse: \ChatMessage.session)
-    var messages: [ChatMessage] = []
+    var messages: [ChatMessage]? = []
 
     init(title: String = "New Chat", model: String = "") {
         self.title = title
@@ -77,7 +84,7 @@ final class ChatSession {
     /// Generate a title from the first user message.
     func autoTitle() {
         guard title == "New Chat",
-              let first = messages.first(where: { $0.role == "user" }) else { return }
+              let first = (messages ?? []).first(where: { $0.role == "user" }) else { return }
         let text = first.content
         title = text.count > 40 ? String(text.prefix(37)) + "…" : text
     }

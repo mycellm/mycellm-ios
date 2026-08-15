@@ -42,6 +42,13 @@ enum MLXRepo {
     struct Asset: Sendable {
         let path: String
         let size: Int64
+        /// Where to fetch this file from. nil → derive the Hugging Face URL
+        /// from the repo id, which is the original behaviour.
+        var url: String? = nil
+        /// Expected sha256. Set for manifest installs, where there is no
+        /// published hash to look up; nil for Hugging Face, which is verified
+        /// against the tree API instead.
+        var sha256: String? = nil
     }
 
     enum Failure: LocalizedError {
@@ -49,6 +56,8 @@ enum MLXRepo {
         case notAnMLXRepo(String)
         case insufficientSpace(needed: Int64, free: Int64)
         case httpStatus(Int, String)
+        case digestMismatch(file: String, expected: String, got: String)
+        case manifestIncomplete(String)
 
         var errorDescription: String? {
             switch self {
@@ -65,6 +74,11 @@ enum MLXRepo {
                 return code == 401 || code == 403
                     ? "\(file) needs authentication — this repo is gated on Hugging Face."
                     : "Download failed for \(file) (HTTP \(code))."
+            case .digestMismatch(let file, let expected, let got):
+                return "\(file) does not match the digest supplied for it "
+                     + "(expected \(expected.prefix(12))…, got \(got.prefix(12))…). The file was discarded."
+            case .manifestIncomplete(let why):
+                return "Manifest rejected: \(why)"
             }
         }
     }
@@ -139,6 +153,29 @@ enum MLXRepo {
 
     // MARK: - Fetch
 
+    /// Install an MLX model from a caller-supplied manifest.
+    ///
+    /// ⚠️ MLX IS THE NATIVE FORMAT ON THIS FLEET, SO IT GETS THE SAME
+    /// TREATMENT AS GGUF. Every node here is Apple Silicon, and an
+    /// admin-install path that only handled single-file GGUF would have missed
+    /// exactly the models these devices run best. An MLX model is a directory,
+    /// so the manifest is per-file — each entry names its own URL and digest,
+    /// and the existing staging/publish/resume machinery is reused unchanged.
+    ///
+    /// Every file must carry a sha256 for the same reason the single-URL form
+    /// does: there is no tree API to ask, so the caller commits to the hashes
+    /// up front or the install is refused.
+    @discardableResult
+    static func download(
+        manifest assets: [Asset],
+        name: String,
+        allowExpensive: Bool = false,
+        onProgress: @escaping @Sendable (Int64, Int64) -> Void
+    ) async throws -> URL {
+        try await install(assets: assets, repoId: "", dirName: name,
+                          allowExpensive: allowExpensive, onProgress: onProgress)
+    }
+
     /// Download every asset into staging, then publish the directory in one move.
     ///
     /// `onProgress` receives (bytes done across the whole model, total bytes) and
@@ -147,10 +184,26 @@ enum MLXRepo {
     static func download(
         repoId: String,
         name: String? = nil,
+        allowExpensive: Bool = false,
         onProgress: @escaping @Sendable (Int64, Int64) -> Void
     ) async throws -> URL {
         let assets = try await plan(repoId: repoId)
-        let dirName = name ?? directoryName(for: repoId)
+        return try await install(
+            assets: assets, repoId: repoId,
+            dirName: name ?? directoryName(for: repoId),
+            allowExpensive: allowExpensive, onProgress: onProgress)
+    }
+
+    /// The shared installer: staging, space check, resume, publish. Identical
+    /// whether the file list came from Hugging Face or from a manifest — only
+    /// where each file is fetched from, and how it is verified, differs.
+    private static func install(
+        assets: [Asset],
+        repoId: String,
+        dirName: String,
+        allowExpensive: Bool,
+        onProgress: @escaping @Sendable (Int64, Int64) -> Void
+    ) async throws -> URL {
         let staging = stagingRoot.appendingPathComponent(dirName, isDirectory: true)
         let fm = FileManager.default
         try fm.createDirectory(at: staging, withIntermediateDirectories: true)
@@ -184,8 +237,22 @@ enum MLXRepo {
             let base = completedBytes - min(have, asset.size)
             try await fetchFile(
                 repoId: repoId, asset: asset, to: dest, resumeFrom: have,
+                allowExpensive: allowExpensive,
                 onBytes: { done in onProgress(base + done, total) }
             )
+            // ⚠️ VERIFIED PER FILE, NOT AT THE END. A manifest install has no
+            // tree API to fall back on, so the digest is the only evidence the
+            // bytes are right — and checking each shard as it lands means a bad
+            // one fails before the next multi-gigabyte fetch starts, instead of
+            // after all of them.
+            if let want = asset.sha256?.lowercased() {
+                let got = try HFVerify.fileHash(url: dest, algo: "sha256")
+                guard got == want else {
+                    try? FileManager.default.removeItem(at: dest)
+                    throw Failure.digestMismatch(file: asset.path, expected: want, got: got)
+                }
+            }
+
             completedBytes = base + asset.size
             onProgress(completedBytes, total)
         }
@@ -206,14 +273,19 @@ enum MLXRepo {
     /// One asset, resuming mid-file when there is something to resume from.
     private static func fetchFile(
         repoId: String, asset: Asset, to dest: URL, resumeFrom have: Int64,
+        allowExpensive: Bool = false,
         onBytes: @escaping @Sendable (Int64) -> Void
     ) async throws {
-        guard let url = URL(string:
-            "https://huggingface.co/\(repoId)/resolve/main/\(asset.path)") else {
+        // A manifest asset carries its own URL; a Hugging Face one derives it.
+        let source = asset.url ?? "https://huggingface.co/\(repoId)/resolve/main/\(asset.path)"
+        guard let url = URL(string: source) else {
             throw Failure.httpStatus(0, asset.path)
         }
         var request = URLRequest(url: url)
         request.timeoutInterval = 60
+        // Weight-sized transfers: the metered-network policy applies here, not
+        // to the small JSON `plan()` fetch that sizes them.
+        DownloadPolicy.apply(to: &request, override: allowExpensive)
         // A partial file from a previous attempt: ask only for the rest.
         if have > 0, have < asset.size {
             request.setValue("bytes=\(have)-", forHTTPHeaderField: "Range")

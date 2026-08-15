@@ -14,12 +14,20 @@ final class NodeStats: @unchecked Sendable {
     var networkBalances: [NetworkBalance] = []
     private(set) var recentEvents: [ActivityItem] = []
 
+    /// The same events in Python's wire shape, with the rolling counters and
+    /// sparklines `/v1/node/activity` reports. `recentEvents` above stays the
+    /// UI's view — see ActivityTracker for why the two are fed side by side
+    /// rather than one derived from the other.
+    let activity = ActivityTracker()
+
     func addEvent(_ kind: ActivityItem.Kind) {
         let item = ActivityItem(kind: kind)
         recentEvents.insert(item, at: 0)
         if recentEvents.count > 100 {
             recentEvents.removeLast()
         }
+        let (type, data) = kind.asActivityEvent
+        activity.record(type, data: data, at: item.timestamp)
     }
 }
 
@@ -91,6 +99,17 @@ final class NodeService: @unchecked Sendable {
     // MARK: - State
     private(set) var isRunning = false
     private(set) var networkMode: NetworkMode = .public
+    /// When `start()` last succeeded. Nil while stopped, which is what makes
+    /// `uptimeSeconds` zero rather than "time since launch" — a node that has
+    /// never been started has no uptime, and reporting process age there would
+    /// make an idle device look like a long-running seeder to the fleet.
+    private(set) var startedAt: Date?
+
+    /// Seconds since the node started serving, 0 when stopped.
+    var uptimeSeconds: Double {
+        guard let startedAt else { return 0 }
+        return Date().timeIntervalSince(startedAt)
+    }
 
     // MARK: - Sub-observables
     let stats = NodeStats()
@@ -190,7 +209,9 @@ final class NodeService: @unchecked Sendable {
     func start() async {
         guard !isRunning else { return }
         isRunning = true
+        startedAt = Date()
         stats.addEvent(.nodeStarted)
+        LogBroadcaster.shared.info("mycellm.node", "Node started — \(nodeName) (\(networkMode.rawValue))")
 
         // Start the LAN browse — this also triggers the iOS Local Network
         // permission prompt, without which connecting to a coordinator by LAN
@@ -198,6 +219,11 @@ final class NodeService: @unchecked Sendable {
         localDiscovery.start()
 
         let prefs = await MainActor.run { Preferences.shared }
+
+        // Mint the management key before the server binds, so a node is
+        // manageable from the moment it is reachable rather than only after
+        // someone visits Settings. See Preferences.ensureAPIKey.
+        await MainActor.run { prefs.ensureAPIKey() }
 
         if prefs.httpServerEnabled || networkMode.apiServerEnabled {
             do {
@@ -277,7 +303,16 @@ final class NodeService: @unchecked Sendable {
                 ModelCapability(name: m.name, backend: activeBackendLabel, scope: m.scope)
             },
             hardware: HardwareInfo.capabilitiesHardware(),
-            role: publicModels.isEmpty ? "consumer" : "seeder",
+            // ⚠️ A LOADED MODEL IS NOT THE SAME AS BEING ABLE TO SERVE. This is
+            // what peers and the router see, and until now a thermally critical
+            // phone at 5% on battery advertised `seeder` and kept being handed
+            // work it would fail or thermally unload halfway through. The node
+            // demotes itself while it is in no state to serve and re-promotes on
+            // the next announce — self-protecting, and it needs no agreement
+            // from any scheduler in the fleet.
+            role: await MainActor.run {
+                DeviceState.effectiveRole(hasLoadedModels: !publicModels.isEmpty)
+            },
             version: NetworkConfig.version,
             networkIds: networkIds
         )
@@ -414,7 +449,9 @@ final class NodeService: @unchecked Sendable {
         connection.bootstrapError = nil
         connection.networkStates.removeAll()
         isRunning = false
+        startedAt = nil
         stats.addEvent(.nodeStopped)
+        LogBroadcaster.shared.info("mycellm.node", "Node stopped")
     }
 
     // MARK: - Relayed Inference (from bootstrap)
@@ -506,6 +543,25 @@ final class NodeService: @unchecked Sendable {
         stats.creditBalance += cost
         stats.addEvent(.inferenceCompleted(model: model, tokens: tokens))
         stats.addEvent(.creditEarned(cost, clientIP))
+    }
+
+    /// Record an inference that failed, so `errors_5min` / `total_errors` and
+    /// the error sparkline mean something.
+    ///
+    /// This has no `ActivityItem.Kind` counterpart on purpose: a failed request
+    /// is an API-level fact the dashboard charts, not a row the on-device
+    /// activity feed shows, and inventing a UI case for it would have put
+    /// server-side noise in front of the user. It goes straight to the tracker.
+    func recordHTTPInferenceFailure(model: String, error: String) {
+        stats.activity.record(.inferenceFailed, data: ["model": .string(model), "error": .string(error)])
+        LogBroadcaster.shared.error("mycellm.inference", "Inference failed (\(model)): \(error)")
+    }
+
+    /// Peers currently connected over QUIC. `PeerManager` stays private — this
+    /// is the read-only projection `/v1/node/peers`, `/v1/node/connections` and
+    /// the Prometheus peer gauge share.
+    var connectedPeerInfo: [PeerManager.PeerInfo] {
+        peerManager.peers
     }
 
     /// Periodically submit receipts to bootstrap for auditing, then reconcile
@@ -706,6 +762,49 @@ struct ActivityItem: Identifiable, Sendable {
         if seconds < 60 { return "\(seconds)\(String(localized: "s ago"))" }
         if seconds < 3600 { return "\(seconds / 60)\(String(localized: "m ago"))" }
         return "\(seconds / 3600)\(String(localized: "h ago"))"
+    }
+}
+
+// MARK: - Activity Item → wire event
+
+extension ActivityItem.Kind {
+    /// Project a UI event onto the API's `{type, ...data}` pair.
+    ///
+    /// The data keys are the ones Python puts in the same event types —
+    /// `model`, `tokens`, `amount`, `peer` — because the dashboard reads them
+    /// by name to render an activity row. Renaming any of these silently
+    /// degrades a row to its bare type string.
+    var asActivityEvent: (ActivityTracker.EventType, [String: ActivityTracker.Value]) {
+        switch self {
+        case .nodeStarted:
+            (.nodeStarted, [:])
+        case .nodeStopped:
+            (.nodeStopped, [:])
+        case .networkModeChanged(let mode):
+            (.networkModeChanged, ["mode": .string(mode.rawValue)])
+        case .modelLoaded(let name):
+            (.modelLoaded, ["model": .string(name)])
+        case .modelUnloaded(let name):
+            (.modelUnloaded, ["model": .string(name)])
+        case .inferenceCompleted(let model, let tokens):
+            (.inferenceComplete, ["model": .string(model), "tokens": .int(tokens)])
+        case .httpServerStarted(let port):
+            (.httpServerStarted, ["port": .int(port)])
+        case .creditEarned(let amount, let peer):
+            (.creditEarned, ["amount": .double(amount), "peer": .string(peer)])
+        case .creditSpent(let amount, let peer):
+            (.creditSpent, ["amount": .double(amount), "peer": .string(peer)])
+        case .peerConnected(let peer):
+            (.peerConnected, ["peer": .string(peer)])
+        case .peerDisconnected(let peer):
+            (.peerDisconnected, ["peer": .string(peer)])
+        case .networkInfo(let lan, let wan, let nat):
+            (.natDiscovered, ["local_ip": .string(lan), "public_ip": .string(wan), "nat_type": .string(nat)])
+        case .relayDiscovered(let name, let models):
+            (.relayDiscovered, ["name": .string(name), "models": .int(models)])
+        case .error(let message):
+            (.nodeError, ["error": .string(message)])
+        }
     }
 }
 
