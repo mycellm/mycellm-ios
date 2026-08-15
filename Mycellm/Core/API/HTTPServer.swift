@@ -385,8 +385,127 @@ actor HTTPServer {
 
         router.post("/v1/node/models/download") { request, _ -> Response in
             let body = try await Self.parseBody(request)
+
+            // ── Arbitrary URL ────────────────────────────────────────────
+            // For models that aren't on Hugging Face: an internal mirror, a
+            // private build, an admin coordinating an install across a fleet.
+            //
+            // ⚠️ `sha256` IS REQUIRED HERE AND NOWHERE ELSE. Every other
+            // download is checked against a hash the node can look up for
+            // itself (HF publishes `lfs.oid`). A URL has no such attestation,
+            // so without a digest this would be the only way to place
+            // unverified weights on a device — on the say-so of whoever holds
+            // the management key. Requiring the caller to commit to a hash in
+            // advance keeps the invariant that everything on disk was verified
+            // against something stated up front.
+            // ── MLX manifest ─────────────────────────────────────────────
+            // An MLX model is a directory, so the admin-install form is
+            // per-file: each entry names its own URL and digest. Same staging,
+            // resume and atomic publish as a Hugging Face repo — only the
+            // source and the verification differ.
+            if let files = body["files"] as? [[String: Any]], !files.isEmpty {
+                guard let name = (body["name"] as? String)?
+                        .trimmingCharacters(in: .whitespaces), !name.isEmpty,
+                      !name.contains("/") else {
+                    return try Self.error("name required for a manifest install")
+                }
+                var assets: [MLXRepo.Asset] = []
+                for f in files {
+                    guard let path = f["path"] as? String, !path.isEmpty, !path.contains("..") else {
+                        return try Self.error("each file needs a path")
+                    }
+                    guard let u = f["url"] as? String,
+                          let parsed = URL(string: u),
+                          parsed.scheme?.lowercased() == "https" else {
+                        return try Self.error("\(path): url must be an absolute https URL")
+                    }
+                    guard let sha = (f["sha256"] as? String)?
+                            .trimmingCharacters(in: .whitespaces).lowercased(),
+                          sha.count == 64, sha.allSatisfy({ $0.isHexDigit }) else {
+                        return try Self.error("\(path): sha256 required — 64 hex characters")
+                    }
+                    let size = (f["size"] as? Int64) ?? Int64(f["size"] as? Int ?? 0)
+                    assets.append(MLXRepo.Asset(path: path, size: size, url: u, sha256: sha))
+                }
+                // The scanner calls a directory loadable when it holds
+                // config.json and any .safetensors — a manifest missing either
+                // publishes something the picker offers and the engine cannot
+                // load, so refuse it up front rather than after the download.
+                guard assets.contains(where: { $0.path.hasSuffix(".safetensors") }),
+                      assets.contains(where: { $0.path == "config.json" }) else {
+                    return try Self.error(
+                        "manifest must include config.json and at least one .safetensors file")
+                }
+
+                let total = assets.reduce(Int64(0)) { $0 + $1.size }
+                let allow = (body["allow_expensive"] as? Bool) ?? false
+                if case .refused(let network) = DownloadPolicy.decide(
+                    connectivity: nodeService.connectivity, override: allow) {
+                    return try Self.json([
+                        "error": [
+                            "code": "expensive_network", "network": network,
+                            "estimated_bytes": total,
+                            "message": DownloadPolicy.refusalMessage(network: network, bytes: total),
+                        ] as [String: Any],
+                    ], status: .conflict)
+                }
+
+                let id = await MainActor.run {
+                    nodeService.modelDownloader.downloadManifest(
+                        assets: assets, name: name, allowExpensive: allow)
+                }
+                return try Self.json([
+                    "status": "downloading", "download_id": id.uuidString,
+                    "name": name, "format": "mlx",
+                    "files": assets.count, "total_bytes": total,
+                ])
+            }
+
+            if let urlString = body["url"] as? String, !urlString.isEmpty {
+                guard let parsed = URL(string: urlString),
+                      let scheme = parsed.scheme?.lowercased(), scheme == "https" else {
+                    return try Self.error("url must be an absolute https URL")
+                }
+                guard let sha256 = (body["sha256"] as? String)?
+                        .trimmingCharacters(in: .whitespaces).lowercased(),
+                      sha256.count == 64,
+                      sha256.allSatisfy({ $0.isHexDigit }) else {
+                    return try Self.error(
+                        "sha256 required for url downloads — 64 hex characters of the file's digest")
+                }
+                let filename = (body["filename"] as? String)
+                    .flatMap { $0.isEmpty ? nil : $0 } ?? parsed.lastPathComponent
+                guard !filename.isEmpty, !filename.contains("/") else {
+                    return try Self.error("filename required (or a URL ending in one)")
+                }
+
+                let decision = DownloadPolicy.decide(
+                    connectivity: nodeService.connectivity,
+                    override: (body["allow_expensive"] as? Bool) ?? false)
+                if case .refused(let network) = decision {
+                    return try Self.json([
+                        "error": [
+                            "code": "expensive_network",
+                            "network": network,
+                            "estimated_bytes": 0,
+                            "message": DownloadPolicy.refusalMessage(network: network, bytes: 0),
+                        ] as [String: Any],
+                    ], status: .conflict)
+                }
+
+                await MainActor.run {
+                    nodeService.modelDownloader.download(
+                        url: urlString, filename: filename, sha256: sha256,
+                        allowExpensive: (body["allow_expensive"] as? Bool) ?? false)
+                }
+                return try Self.json([
+                    "status": "downloading", "url": urlString,
+                    "filename": filename, "format": "gguf", "sha256": sha256,
+                ])
+            }
+
             guard let repoId = body["repo_id"] as? String, !repoId.isEmpty else {
-                return try Self.error("repo_id required")
+                return try Self.error("repo_id, url, or files (manifest) required")
             }
 
             // Explicit `format` wins; otherwise a filename means the caller has

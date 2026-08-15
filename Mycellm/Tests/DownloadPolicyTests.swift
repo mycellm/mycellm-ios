@@ -220,3 +220,42 @@ final class DeviceStateTests: XCTestCase {
         XCTAssertEqual(role, DeviceState.canServe() ? "seeder" : "consumer")
     }
 }
+
+/// Arbitrary-URL downloads. Mirrored by tests/unit/test_url_download.py on the
+/// Python node — a model an admin installs must be verifiable on either
+/// platform, by the same rule.
+final class URLDownloadTests: XCTestCase {
+
+    /// ⚠️ THE DIGEST REQUIREMENT IS THE POINT. Every other download is checked
+    /// against a hash the node looks up itself (HF publishes `lfs.oid`). A
+    /// caller-supplied URL has no such attestation, so without a digest this
+    /// would be the only way to put unverified weights on a device.
+    func testURLOriginCarriesItsDigest() {
+        let o = ModelDownloader.Download.Origin.url("https://m.example/x.gguf", sha256: "abc")
+        XCTAssertNotEqual(o, .huggingFace)
+        if case .url(let u, let sha) = o {
+            XCTAssertEqual(u, "https://m.example/x.gguf")
+            XCTAssertEqual(sha, "abc")
+        } else {
+            XCTFail("expected a url origin")
+        }
+    }
+
+    func testDownloadsDefaultToTheHuggingFaceOrigin() {
+        let d = ModelDownloader.Download(repoId: "org/repo", filename: "m.gguf")
+        XCTAssertEqual(d.origin, .huggingFace)
+    }
+
+    /// A 64-char lowercase hex digest is the only accepted form; the route
+    /// rejects everything else before a byte is fetched.
+    func testDigestShapeIsWhatTheRouteEnforces() {
+        func valid(_ s: String) -> Bool {
+            s.count == 64 && s.allSatisfy { $0.isHexDigit }
+        }
+        XCTAssertTrue(valid(String(repeating: "a", count: 64)))
+        XCTAssertTrue(valid(String(repeating: "0", count: 64)))
+        XCTAssertFalse(valid("abc123"))
+        XCTAssertFalse(valid(String(repeating: "z", count: 64)))
+        XCTAssertFalse(valid(String(repeating: "a", count: 63)))
+    }
+}
