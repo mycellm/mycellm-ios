@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  Export options for App Store / TestFlight distribution.
+
+	  `destination: export` writes an .ipa locally rather than having xcodebuild
+	  upload it directly — the upload is a separate, explicit altool step so the
+	  artifact can be inspected (and the build number confirmed) before anything
+	  reaches App Store Connect.
+
+	  Signing is automatic, matching CODE_SIGN_STYLE in project.yml; the team
+	  owns the Increased Memory Limit capability the entitlements file requires,
+	  so the profile has to be issued for this team specifically.
+	-->
+	<key>method</key>
+	<string>app-store-connect</string>
+	<key>destination</key>
+	<string>export</string>
+	<key>teamID</key>
+	<string>DCMLXQ5H7M</string>
+	<key>signingStyle</key>
+	<string>automatic</string>
+	<!--
+	  Bitcode has been removed from the toolchain; symbols are uploaded so
+	  TestFlight crash reports come back symbolicated.
+	-->
+	<key>uploadSymbols</key>
+	<true/>
+	<!--
+	  Off deliberately: App Store thinning by device would produce variants we
+	  don't test, and the app's model files are downloaded at runtime rather
+	  than bundled, so there is little to thin.
+	-->
+	<key>compileBitcode</key>
+	<false/>
+	<key>manageAppVersionAndBuildNumber</key>
+	<false/>
+</dict>
+</plist>
