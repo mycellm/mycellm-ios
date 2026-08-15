@@ -55,7 +55,61 @@ enum AppDatabase {
     /// which is exactly when the UI needs to explain itself.
     nonisolated(unsafe) private(set) static var activeSyncSetting: Bool?
 
-    static func makeContainer() throws -> ModelContainer {
+    /// Build the container, falling back to the original single store if the
+    /// split cannot be opened.
+    ///
+    /// ⚠️ A STORAGE REORGANISATION MUST NEVER BRICK THE APP. This threw on
+    /// device and `MycellmApp` stored the `try?` result — nil — then rendered
+    /// its `if let container` branch, which has no else. The app launched to a
+    /// black screen with no node, no UI and no error: every symptom of a crash
+    /// except the crash. Whatever goes wrong with two configurations, opening
+    /// the store the app has always used is still possible, so that is the
+    /// floor. Sync and the split are features; launching is not.
+    static func makeContainer() -> ModelContainer? {
+        do {
+            return try makeSplitContainer()
+        } catch {
+            LogBroadcaster.shared.error(
+                "mycellm.storage",
+                "Split container failed (\(error)) — falling back to the single store. "
+                + "Chat sync is unavailable this launch.")
+            splitFailure = String(describing: error)
+            if let legacy = try? makeLegacyContainer() { return legacy }
+            // ⚠️ NO `try!` HERE. The last resort existed so the UI could still
+            // come up and explain itself; written with try! it did the opposite,
+            // turning a degraded launch into a hard crash on the one path that
+            // only runs when everything else has already failed.
+            let memory = ModelConfiguration(
+                schema: Schema(localTypes + chatTypes),
+                isStoredInMemoryOnly: true,
+                cloudKitDatabase: .none
+            )
+            return try? ModelContainer(for: Schema(localTypes + chatTypes), configurations: memory)
+        }
+    }
+
+    /// Why the split container failed, if it did — surfaced in Settings so a
+    /// silent fallback isn't invisible.
+    nonisolated(unsafe) private(set) static var splitFailure: String?
+
+    /// The pre-split arrangement: one default store holding everything, no
+    /// CloudKit. Exactly what every build before this one used.
+    static func makeLegacyContainer() throws -> ModelContainer {
+        activeSyncSetting = false
+        // ⚠️ `cloudKitDatabase: .none` IS LOAD-BEARING. Omit the configuration
+        // and SwiftData defaults to `.automatic`, which turns CloudKit ON
+        // whenever the app carries an iCloud entitlement — so the fallback
+        // failed with exactly the CloudKit error it was meant to escape, and
+        // the "safe" path was as broken as the one it replaced.
+        let config = ModelConfiguration(
+            schema: Schema(localTypes + chatTypes),
+            isStoredInMemoryOnly: false,
+            cloudKitDatabase: .none
+        )
+        return try ModelContainer(for: Schema(localTypes + chatTypes), configurations: config)
+    }
+
+    private static func makeSplitContainer() throws -> ModelContainer {
         activeSyncSetting = syncEnabled
         // ⚠️ THE LEGACY STORE IS READ BEFORE ANYTHING ELSE OPENS. Once the new
         // configurations exist, the old file is nobody's business — and if a
@@ -161,7 +215,7 @@ enum ChatMigration {
                 Snapshot.Session(
                     title: s.title, createdAt: s.createdAt, updatedAt: s.updatedAt,
                     model: s.model,
-                    messages: s.messages
+                    messages: (s.messages ?? [])
                         .sorted { $0.timestamp < $1.timestamp }
                         .map { m in
                             Snapshot.Message(

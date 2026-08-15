@@ -44,6 +44,13 @@ struct RootView: View {
                 SplashView()
 
             case .ready:
+                // ⚠️ THIS `if let` HAD NO ELSE, AND THAT IS HOW A STORAGE
+                // ERROR BECAME A BLACK SCREEN. `phase` moved to .ready while
+                // `modelContainer` was nil, so the branch produced no view at
+                // all — the app looked launched, showed nothing, started no
+                // node, and reported no error. A container is now always
+                // returned, but the empty case still gets a real view rather
+                // than silence.
                 if let node = nodeService, let container = modelContainer {
                     ZStack {
                         MainTabView()
@@ -87,6 +94,22 @@ struct RootView: View {
                         lastInteraction = Date()
                     }
                     .onChange(of: node.isRunning) { _, _ in applyKeepAwake(node: node) }
+                } else {
+                    VStack(spacing: 12) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 32))
+                            .foregroundStyle(Color.ledgerGold)
+                        Text("Couldn't start")
+                            .font(.mono(15, weight: .semibold))
+                            .foregroundStyle(Color.consoleText)
+                        Text("The node failed to initialise. Force-quit and reopen; if it persists, reinstall keeps your models but not chat history.")
+                            .font(.mono(11))
+                            .foregroundStyle(Color.consoleDim)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, 32)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Color.voidBlack)
                 }
             }
         }
@@ -98,7 +121,7 @@ struct RootView: View {
             // — the thing that splits chat into its own syncable store and
             // carries history across — was dead code nothing called.
             async let container = await MainActor.run {
-                try? AppDatabase.makeContainer()
+                AppDatabase.makeContainer()
             }
 
             let n = await node

@@ -234,7 +234,7 @@ struct ChatView: View {
         currentSession = session
         Preferences.shared.lastSessionId = session.persistentModelID.hashValue.description
         // Load persisted messages into display messages
-        let sorted = session.messages.sorted { $0.timestamp < $1.timestamp }
+        let sorted = (session.messages ?? []).sorted { $0.timestamp < $1.timestamp }
         messages = sorted.map { msg in
             var dm = DisplayMessage(
                 role: msg.role, content: msg.content,
@@ -270,7 +270,7 @@ struct ChatView: View {
         messages.removeAll { $0.id == msg.id }
         // Remove from SwiftData
         if let session = currentSession,
-           let stored = session.messages.first(where: { $0.timestamp == msg.timestamp && $0.role == msg.role }) {
+           let stored = (session.messages ?? []).first(where: { $0.timestamp == msg.timestamp && $0.role == msg.role }) {
             modelContext.delete(stored)
             try? modelContext.save()
         }
@@ -1225,7 +1225,7 @@ struct SessionListView: View {
     }
 
     private func shareSession(_ session: ChatSession) {
-        let sorted = session.messages.sorted { $0.timestamp < $1.timestamp }
+        let sorted = (session.messages ?? []).sorted { $0.timestamp < $1.timestamp }
         var lines: [String] = ["# \(session.title)", ""]
         for msg in sorted {
             let role = msg.role == "user" ? "You" : "Assistant"
@@ -1250,7 +1250,7 @@ struct SessionListView: View {
                     }
                 }
                 HStack(spacing: 8) {
-                    Text("\(session.messages.count) messages")
+                    Text("\((session.messages ?? []).count) messages")
                         .font(.mono(10))
                         .foregroundStyle(Color.consoleDim)
                     if !session.model.isEmpty {

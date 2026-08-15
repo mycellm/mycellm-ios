@@ -86,11 +86,17 @@ enum DownloadPolicy {
     /// Human-readable refusal, with the size when it is known — the number is
     /// the whole point of telling someone, so a caller can decide.
     static func refusalMessage(network: String, bytes: Int64) -> String {
-        let size = bytes > 0
-            ? ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
-            : "This model"
+        // ⚠️ TWO SENTENCES, NOT ONE WITH A SUBSTITUTED NOUN. Splicing a
+        // placeholder into the size slot produced "Refusing to download This
+        // model over a metered (cellular) connection" whenever the size was
+        // unknown — which is every GGUF refusal, since that path has no size
+        // until a HEAD request. The unit test asserted the message contained
+        // "This model" and so agreed with the bug.
         let what = network == "cellular" ? "a metered (cellular) connection" : "Low Data Mode"
-        return "Refusing to download \(size) over \(what). "
-            + "Retry with allow_expensive:true, or enable large downloads on metered networks in Settings."
+        let opening = bytes > 0
+            ? "Refusing to download \(ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)) over \(what)."
+            : "Refusing to download this model over \(what)."
+        return opening
+            + " Retry with allow_expensive:true, or enable large downloads on metered networks in Settings."
     }
 }

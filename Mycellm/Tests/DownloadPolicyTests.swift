@@ -72,10 +72,21 @@ final class DownloadPolicyTests: XCTestCase {
         XCTAssertFalse(constrained.lowercased().contains("cellular"), constrained)
     }
 
-    func testRefusalMessageWithUnknownSizeStillReads() {
+    /// ⚠️ ASSERTS THE SENTENCE, NOT A SUBSTRING. The previous version checked
+    /// for "This model" and passed while the message read "Refusing to download
+    /// This model over a metered (cellular) connection" — the test agreed with
+    /// the bug because it was written from the implementation rather than from
+    /// what a person should read. Seen on a real cellular refusal.
+    func testRefusalMessageWithUnknownSizeReadsAsASentence() {
         let msg = DownloadPolicy.refusalMessage(network: "cellular", bytes: 0)
+        XCTAssertTrue(msg.hasPrefix("Refusing to download this model over a metered (cellular) connection."), msg)
+        XCTAssertFalse(msg.contains("This model"), msg)
         XCTAssertFalse(msg.contains("0 bytes"), msg)
-        XCTAssertTrue(msg.contains("This model"), msg)
+    }
+
+    func testRefusalMessageWithKnownSizeLeadsWithIt() {
+        let msg = DownloadPolicy.refusalMessage(network: "cellular", bytes: 289_598_797)
+        XCTAssertTrue(msg.hasPrefix("Refusing to download 289.6 MB over"), msg)
     }
 
     // MARK: - Decision
