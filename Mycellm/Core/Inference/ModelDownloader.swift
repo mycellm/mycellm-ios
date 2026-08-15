@@ -122,7 +122,7 @@ final class ModelDownloader: NSObject, @unchecked Sendable, URLSessionDownloadDe
     /// Fetch an MLX repo. Returns the download id so the HTTP caller can poll it.
     @discardableResult
     @MainActor
-    func downloadRepo(repoId: String, name: String? = nil) -> UUID {
+    func downloadRepo(repoId: String, name: String? = nil, allowExpensive: Bool = false) -> UUID {
         let dirName = name ?? MLXRepo.directoryName(for: repoId)
 
         // Re-requesting something already running is a resume in the user's
@@ -145,7 +145,9 @@ final class ModelDownloader: NSObject, @unchecked Sendable, URLSessionDownloadDe
         // since MLXRepo calls it from whatever context the transfer is on.
         repoTasks[id] = Task { [weak self] in
             do {
-                try await MLXRepo.download(repoId: repoId, name: dirName) { done, total in
+                try await MLXRepo.download(
+                    repoId: repoId, name: dirName, allowExpensive: allowExpensive
+                ) { done, total in
                     Task { @MainActor in self?.updateRepo(id, done: done, total: total) }
                 }
                 guard let self, let i = repoDownloads.firstIndex(where: { $0.id == id }) else { return }
@@ -194,7 +196,12 @@ final class ModelDownloader: NSObject, @unchecked Sendable, URLSessionDownloadDe
     }
 
     /// Start downloading a GGUF file from HuggingFace.
-    func download(repoId: String, filename: String) {
+    ///
+    /// `allowExpensive` is the caller's one-shot opt-in to a metered path; the
+    /// standing preference is consulted by `DownloadPolicy` either way. The
+    /// request carries the decision so URLSession enforces it even if a caller
+    /// skipped the pre-check.
+    func download(repoId: String, filename: String, allowExpensive: Bool = false) {
         let urlString = "https://huggingface.co/\(repoId)/resolve/main/\(filename)"
         guard let url = URL(string: urlString) else { return }
 
@@ -202,7 +209,8 @@ final class ModelDownloader: NSObject, @unchecked Sendable, URLSessionDownloadDe
         dl.state = .downloading
         dl.startTime = Date()
 
-        let task = session.downloadTask(with: url)
+        let task = session.downloadTask(
+            with: DownloadPolicy.request(for: url, override: allowExpensive))
         dl.task = task
         tasks[task.taskIdentifier] = dl.id
         activeDownloads.append(dl)

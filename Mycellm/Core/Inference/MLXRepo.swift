@@ -147,6 +147,7 @@ enum MLXRepo {
     static func download(
         repoId: String,
         name: String? = nil,
+        allowExpensive: Bool = false,
         onProgress: @escaping @Sendable (Int64, Int64) -> Void
     ) async throws -> URL {
         let assets = try await plan(repoId: repoId)
@@ -184,6 +185,7 @@ enum MLXRepo {
             let base = completedBytes - min(have, asset.size)
             try await fetchFile(
                 repoId: repoId, asset: asset, to: dest, resumeFrom: have,
+                allowExpensive: allowExpensive,
                 onBytes: { done in onProgress(base + done, total) }
             )
             completedBytes = base + asset.size
@@ -206,6 +208,7 @@ enum MLXRepo {
     /// One asset, resuming mid-file when there is something to resume from.
     private static func fetchFile(
         repoId: String, asset: Asset, to dest: URL, resumeFrom have: Int64,
+        allowExpensive: Bool = false,
         onBytes: @escaping @Sendable (Int64) -> Void
     ) async throws {
         guard let url = URL(string:
@@ -214,6 +217,9 @@ enum MLXRepo {
         }
         var request = URLRequest(url: url)
         request.timeoutInterval = 60
+        // Weight-sized transfers: the metered-network policy applies here, not
+        // to the small JSON `plan()` fetch that sizes them.
+        DownloadPolicy.apply(to: &request, override: allowExpensive)
         // A partial file from a previous attempt: ask only for the rest.
         if have > 0, have < asset.size {
             request.setValue("bytes=\(have)-", forHTTPHeaderField: "Range")
