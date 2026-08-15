@@ -9,6 +9,11 @@ enum MycellmError: Error, LocalizedError {
     case modelTooLarge(needed: UInt64, available: UInt64)
     case modelNotLoaded(String)
     case inferenceError(String)
+    /// The loaded model/backend cannot produce embeddings. Distinct from
+    /// `inferenceError` because `/v1/embeddings` maps it to a specific
+    /// OpenAI error code (`embeddings_not_supported`) that clients branch on,
+    /// exactly as Python's `EmbeddingsNotSupportedError` does.
+    case embeddingsNotSupported(String)
     case transportError(String)
     case protocolError(ErrorCode, String)
 
@@ -21,6 +26,7 @@ enum MycellmError: Error, LocalizedError {
         case .modelTooLarge(let needed, let available): String(localized: "Model requires \(needed / 1_073_741_824)GB, only \(available / 1_073_741_824)GB available")
         case .modelNotLoaded(let name): String(localized: "Model not loaded: \(name)")
         case .inferenceError(let msg): String(localized: "Inference error: \(msg)")
+        case .embeddingsNotSupported(let msg): String(localized: "Embeddings not supported: \(msg)")
         case .transportError(let msg): String(localized: "Transport error: \(msg)")
         case .protocolError(let code, let msg): "[\(code.rawValue)] \(msg)"
         }

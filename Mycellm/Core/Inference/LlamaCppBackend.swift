@@ -16,6 +16,7 @@ actor LlamaCppBackend: InferenceBackend {
     }
 
     func cleanup() {
+        if let e = embedCtx { llama_free(e); embedCtx = nil }
         if let c = ctx { llama_free(c); ctx = nil }
         if let m = model { llama_model_free(m); model = nil }
         llama_backend_free()
@@ -51,6 +52,7 @@ actor LlamaCppBackend: InferenceBackend {
             throw MycellmError.modelTooLarge(needed: fileSize, available: HardwareInfo.availableMemory)
         }
 
+        if let e = embedCtx { llama_free(e); embedCtx = nil }
         if let c = ctx { llama_free(c); ctx = nil }
         if let m = model { llama_model_free(m); model = nil }
 
@@ -78,6 +80,9 @@ actor LlamaCppBackend: InferenceBackend {
     }
 
     func unloadModel() {
+        // Freed before the model it was created from — a context outliving its
+        // model is a dangling backend reference.
+        if let e = embedCtx { llama_free(e); embedCtx = nil }
         if let c = ctx { llama_free(c); ctx = nil }
         if let m = model { llama_model_free(m); model = nil }
         loadedModel = nil
@@ -225,6 +230,259 @@ actor LlamaCppBackend: InferenceBackend {
         let elapsed = Date().timeIntervalSince(startTime)
         tokensPerSecond = elapsed > 0 ? Double(count) / elapsed : 0
         continuation.finish()
+    }
+
+    // MARK: - Embeddings
+
+    /// ⚠️ OFF FOR 1.2.0 — THE POOLED OUTPUT IS WRONG, NOT MERELY UNVERIFIED.
+    ///
+    /// The plumbing below works: a request reaches the backend, an encoder pass
+    /// runs, and 384 finite floats come back per input at the right dimension
+    /// with a unit L2 norm. The *numbers* are not embeddings. Measured on
+    /// all-MiniLM-L6-v2 Q4_K_M with three inputs — two near-identical sentences
+    /// about a cat and one about financial regulation — cosine similarity came
+    /// back cos(cat,kitten) = -0.999 and cos(kitten,finance) = +0.955: the
+    /// three vectors are collinear with sign flips, so per-sequence mean
+    /// pooling is not producing independent results for a multi-sequence batch.
+    /// Every value being plausible in isolation is exactly what makes this
+    /// dangerous to ship — a caller indexing a corpus would get a vector store
+    /// full of confident garbage and no error anywhere to explain it.
+    ///
+    /// Turning this on requires establishing, on real hardware, how llama.cpp
+    /// wants a pooled multi-sequence embedding batch submitted for an
+    /// encoder-only model, then re-running the similarity check above as the
+    /// acceptance test. The endpoint, its validation and its error contract all
+    /// stay live meanwhile and answer `embeddings_not_supported`, which is what
+    /// the Python node returns for a backend that cannot embed — so the API
+    /// surface is honest rather than absent.
+    static let embeddingsEnabled = false
+
+    /// llama.cpp can embed with any model, but only an embedding model gives a
+    /// vector worth anything — a chat model's pooled hidden state is not a
+    /// sentence embedding. `EmbeddingModels` decides; see it for the rule.
+    var supportsEmbeddings: Bool {
+        guard Self.embeddingsEnabled, let loadedModel else { return false }
+        return EmbeddingModels.isEmbeddingModel(loadedModel)
+    }
+
+    /// Embed texts with the loaded GGUF model.
+    ///
+    /// ⚠️ A FRESH CONTEXT PER CALL, DELIBERATELY. Embeddings need
+    /// `ctx_params.embeddings = true` and a pooling type, both fixed at context
+    /// creation — the generation context cannot be reused, and keeping a second
+    /// long-lived context alive would mean clearing its KV cache between calls
+    /// through an API llama.cpp has renamed three times in a year
+    /// (`llama_kv_cache_clear` → `llama_kv_self_clear` → `llama_memory_clear`).
+    /// Pinning this file to whichever spelling today's llama.swift ships would
+    /// break it on the next bump for no user-visible gain: an embedding model's
+    /// context is small and creating one costs milliseconds against a decode
+    /// that costs more. Correctness and upgrade-survivability over a
+    /// micro-optimisation.
+    ///
+    /// Inputs are batched under distinct sequence ids, so a 32-text request is
+    /// one decode rather than 32 — subject to the chunk caps below.
+    func embed(_ texts: [String]) async throws -> EmbeddingResult {
+        guard let model else { throw MycellmError.modelNotLoaded("No model loaded") }
+        guard Self.embeddingsEnabled else {
+            throw MycellmError.embeddingsNotSupported(
+                "on-device embeddings are not enabled in this build"
+            )
+        }
+        guard supportsEmbeddings else {
+            throw MycellmError.embeddingsNotSupported(
+                "'\(loadedModel ?? "model")' is not an embedding model"
+            )
+        }
+        guard !texts.isEmpty else { return EmbeddingResult(embeddings: [], totalTokens: 0) }
+
+        // ⚠️ TRUNCATE TO THE TRAINING CONTEXT. An embedding model's context is
+        // short (512 tokens for MiniLM/BGE) and a longer input would size the
+        // KV cache past anything the model can attend over anyway. Every
+        // embedding server truncates here; failing the request instead would
+        // make a document-chunking client's life needlessly hard.
+        let maxTokens = max(1, Int(llama_model_n_ctx_train(model)))
+        let tokenized = texts.map { Array(tokenize(text: $0, model: model).prefix(maxTokens)) }
+        if let emptyIndex = tokenized.firstIndex(where: { $0.isEmpty }) {
+            throw MycellmError.inferenceError("Input at index \(emptyIndex) tokenized to nothing")
+        }
+
+        // ⚠️ READ THE *OUTPUT* WIDTH, NOT THE HIDDEN WIDTH. `llama_get_embeddings_seq`
+        // returns a buffer of the model's output embedding size, which differs
+        // from `llama_model_n_embd` on any model carrying a projection head —
+        // and copying n_embd floats out of a shorter buffer is an out-of-bounds
+        // read, not a wrong number. `n_embd_out` is preferred where the build
+        // reports one; n_embd is the fallback for models where they coincide.
+        let nEmbdOut = Int(llama_model_n_embd_out(model))
+        let nEmbd = nEmbdOut > 0 ? nEmbdOut : Int(llama_model_n_embd(model))
+        guard nEmbd > 0 else {
+            throw MycellmError.inferenceError("Model reports an embedding size of 0")
+        }
+
+        // ⚠️ THE BATCH IS CAPPED, BECAUSE THE KV CACHE IS SIZED FROM IT. The
+        // context below is allocated as `longest × count`, so one context
+        // holding every input means a caller sending a few thousand chunks —
+        // the normal shape of an indexing job — asks the device to allocate a
+        // KV cache for the lot at once and gets an OOM kill instead of an
+        // answer. Inputs are chunked to these caps and decoded in sequence; the
+        // response is identical, the peak footprint is bounded.
+        // The sequence cap is the context's `n_seq_max` — submitting more
+        // sequences than it was built for is the abort case above.
+        let maxChunkSequences = Self.embedMaxSequences
+        let maxChunkTokens = Self.embeddingContextSize(
+            longest: min(maxTokens, 512), sequences: maxChunkSequences)
+
+        var chunks: [[[llama_token]]] = []
+        var current: [[llama_token]] = []
+        var currentTokens = 0
+        for tokens in tokenized {
+            let wouldExceed = currentTokens + tokens.count > maxChunkTokens
+                || current.count >= maxChunkSequences
+            if !current.isEmpty, wouldExceed {
+                chunks.append(current)
+                current = []
+                currentTokens = 0
+            }
+            current.append(tokens)
+            currentTokens += tokens.count
+        }
+        if !current.isEmpty { chunks.append(current) }
+
+        var out: [[Double]] = []
+        out.reserveCapacity(texts.count)
+        for chunk in chunks {
+            out.append(contentsOf: try embedChunk(chunk, model: model, nEmbd: nEmbd))
+        }
+
+        return EmbeddingResult(
+            embeddings: out,
+            totalTokens: tokenized.reduce(0) { $0 + $1.count }
+        )
+    }
+
+    /// The embedding context, created once per loaded model and kept alive.
+    ///
+    /// ⚠️ NOT CREATED PER REQUEST. It was, and that corrupted the heap: the
+    /// first call returned a correct vector, `llama_free` on its context left a
+    /// freed block modified behind it ("Incorrect checksum for freed object",
+    /// with a NaN float pattern in the corpse), and the *next* allocation took
+    /// the process down. Two live contexts against one model, one of them
+    /// repeatedly created and destroyed, is not a pattern llama.cpp's own
+    /// embedding example uses — it builds one context and reuses it, which is
+    /// what this does. Sequence state is cleared between calls instead.
+    private var embedCtx: OpaquePointer?
+
+    /// Sequence capacity of the persistent embedding context. Requests are
+    /// chunked to this, and the context is sized to give each sequence a full
+    /// window (see `embeddingContextSize`).
+    private static let embedMaxSequences = 8
+
+    /// Build the embedding context for the loaded model, or return the existing
+    /// one. Sized once for the worst case this backend will submit, because the
+    /// dimensions are fixed at creation and cannot be grown per request.
+    private func embeddingContext(model: OpaquePointer) throws -> OpaquePointer {
+        if let embedCtx { return embedCtx }
+
+        let perSequence = min(max(1, Int(llama_model_n_ctx_train(model))), 512)
+        let sequences = Self.embedMaxSequences
+        let total = Self.embeddingContextSize(longest: perSequence, sequences: sequences)
+
+        var ctxParams = llama_context_default_params()
+        // ⚠️ `n_ctx` IS THE TOTAL ACROSS SEQUENCES, NOT PER SEQUENCE. llama.cpp
+        // divides it by `n_seq_max` to get each sequence's window, so sizing it
+        // to a token total silently gives every sequence a fraction of what it
+        // needs as soon as there is more than one input — and llama.cpp answers
+        // that by aborting the process, not by returning an error. A single
+        // input hides it completely, since dividing by 1 is a no-op.
+        ctxParams.n_ctx = UInt32(total)
+        ctxParams.n_batch = UInt32(total)
+        ctxParams.n_ubatch = UInt32(total)
+        ctxParams.n_seq_max = UInt32(sequences)
+        ctxParams.n_threads = Int32(max(1, ProcessInfo.processInfo.activeProcessorCount - 2))
+        ctxParams.embeddings = true
+        ctxParams.pooling_type = LLAMA_POOLING_TYPE_MEAN
+
+        guard let ctx = llama_init_from_model(model, ctxParams) else {
+            throw MycellmError.inferenceError("llama_init_from_model failed for embeddings")
+        }
+        embedCtx = ctx
+        return ctx
+    }
+
+    /// One encode/decode over a bounded group of tokenized inputs.
+    private func embedChunk(
+        _ tokenized: [[llama_token]], model: OpaquePointer, nEmbd: Int
+    ) throws -> [[Double]] {
+        let totalTokens = tokenized.reduce(0) { $0 + $1.count }
+        let embedCtx = try embeddingContext(model: model)
+
+        // Drop the previous request's sequence state. Without this the context
+        // still holds the last call's tokens under the same sequence ids and
+        // pooling would mix the two.
+        llama_memory_clear(llama_get_memory(embedCtx), true)
+
+        var batch = llama_batch_init(Int32(totalTokens), 0, Int32(tokenized.count))
+        defer { llama_batch_free(batch) }
+
+        // ⚠️ EVERY FIELD IS SET BY HAND, including `logits`. The convenience
+        // constructor `llama_batch_get_one` leaves seq_id and logits null,
+        // which llama.cpp fills in as "one sequence, output on the last token
+        // only" — correct for generation, wrong here twice over: all inputs
+        // would pool into sequence 0, and mean-pooling needs every token marked
+        // as an output.
+        var cursor = Int32(0)
+        for (seq, tokens) in tokenized.enumerated() {
+            for (pos, token) in tokens.enumerated() {
+                batch.token[Int(cursor)] = token
+                batch.pos[Int(cursor)] = llama_pos(pos)
+                batch.n_seq_id[Int(cursor)] = 1
+                batch.seq_id[Int(cursor)]![0] = llama_seq_id(seq)
+                batch.logits[Int(cursor)] = 1
+                cursor += 1
+            }
+        }
+        batch.n_tokens = cursor
+
+        // ⚠️ ENCODER MODELS NEED `llama_encode`, NOT `llama_decode`. The models
+        // that matter here are exactly the encoder-only ones — BERT and its
+        // descendants: MiniLM, BGE, GTE, E5. llama.cpp notices the mistake and
+        // logs "cannot decode batches with this context (calling encode()
+        // instead)", which reads like a graceful fallback and is not one to
+        // depend on: the redirect is undocumented, version-dependent, and
+        // leaves the pooled-embedding output in a state this code has no
+        // contract over. Ask the model which it is and call the matching entry
+        // point.
+        let status = llama_model_has_encoder(model)
+            ? llama_encode(embedCtx, batch)
+            : llama_decode(embedCtx, batch)
+        guard status >= 0 else {
+            let fn = llama_model_has_encoder(model) ? "llama_encode" : "llama_decode"
+            throw MycellmError.inferenceError("\(fn) failed during embedding (status \(status))")
+        }
+
+        return try (0..<tokenized.count).map { seq in
+            guard let raw = llama_get_embeddings_seq(embedCtx, llama_seq_id(seq)) else {
+                throw MycellmError.inferenceError("No embedding returned for input \(seq)")
+            }
+            return Self.l2Normalize((0..<nEmbd).map { Double(raw[$0]) })
+        }
+    }
+
+    /// Total context to request for an embedding batch.
+    ///
+    /// llama.cpp treats `n_ctx` as the budget for *all* sequences and gives
+    /// each one `n_ctx / n_seq_max`, so this multiplies up rather than taking a
+    /// total — see the call site for what happens when it doesn't.
+    static func embeddingContextSize(longest: Int, sequences: Int) -> Int {
+        max(1, longest) * max(1, sequences)
+    }
+
+    /// Unit-normalise, matching what every embedding server returns and what
+    /// cosine-similarity consumers assume. A zero vector is returned unchanged
+    /// rather than producing NaNs.
+    static func l2Normalize(_ v: [Double]) -> [Double] {
+        let norm = (v.reduce(0) { $0 + $1 * $1 }).squareRoot()
+        guard norm > 0, norm.isFinite else { return v }
+        return v.map { $0 / norm }
     }
 
     // MARK: - Context Reset
