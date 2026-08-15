@@ -20,5 +20,23 @@
 	-->
 	<key>com.apple.developer.kernel.increased-memory-limit</key>
 	<true/>
+	<!--
+	  iCloud / CloudKit — chat history syncs across the user's devices via the
+	  private database (see AppDatabase). Only the chat store is synced; model
+	  inventory and activity telemetry stay device-local.
+
+	  ⚠️ The container identifier must match `AppDatabase.cloudContainerID` and
+	  must be ticked under the App ID's iCloud capability in the developer
+	  portal. If they disagree the container fails to open at launch, which
+	  presents as the app starting with no chat history rather than as an error.
+	-->
+	<key>com.apple.developer.icloud-container-identifiers</key>
+	<array>
+		<string>iCloud.com.mycellm.app</string>
+	</array>
+	<key>com.apple.developer.icloud-services</key>
+	<array>
+		<string>CloudKit</string>
+	</array>
 </dict>
 </plist>

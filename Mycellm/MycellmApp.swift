@@ -92,8 +92,13 @@ struct RootView: View {
         }
         .task {
             async let node = await MainActor.run { NodeService() }
+            // ⚠️ GOES THROUGH AppDatabase, WHICH IT PREVIOUSLY DID NOT. This
+            // built its own container inline from the bare type list, so the
+            // app used SwiftData's default store and `AppDatabase.makeContainer`
+            // — the thing that splits chat into its own syncable store and
+            // carries history across — was dead code nothing called.
             async let container = await MainActor.run {
-                try? ModelContainer(for: StoredModel.self, ChatMessage.self, ChatSession.self, ActivityEvent.self)
+                try? AppDatabase.makeContainer()
             }
 
             let n = await node
