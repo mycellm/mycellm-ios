@@ -509,7 +509,7 @@ struct ChatView: View {
     /// What on-device chat the user can fall back to right now — drives the nudge.
     private enum LocalFallback { case ready, needsLoad, needsDownload }
     private var localFallback: LocalFallback {
-        if node.hasLoadedModel { return .ready }
+        if !node.modelManager.chatModels.isEmpty { return .ready }
         if downloadedModelCount > 0 { return .needsLoad }
         return .needsDownload
     }
@@ -565,9 +565,16 @@ struct ChatView: View {
     private var offlineNudgeText: String {
         switch localFallback {
         case .ready:
-            let name = node.modelManager.loadedModels.first?.name ?? "your model"
+            let name = node.modelManager.chatModels.first?.name ?? "your model"
             return "Chat on-device with \(name) — no connection needed."
         case .needsLoad:
+            // "None loaded" would be false when an embedding model is loaded —
+            // it just cannot chat, which is a different problem with a
+            // different fix.
+            if node.modelManager.hasOnlyEmbeddingModels {
+                let name = node.modelManager.loadedModels.first?.name ?? "It"
+                return "\(name) is an embedding model — it can't hold a conversation. Load a chat model to chat on-device."
+            }
             let n = downloadedModelCount
             return "You have \(n) model\(n == 1 ? "" : "s") downloaded but none loaded. Load one to chat on-device."
         case .needsDownload:
@@ -645,11 +652,11 @@ struct ChatView: View {
             let model = Preferences.shared.remoteModel
             return model.isEmpty ? "Connected" : model
         case .onDevice:
-            if let first = node.modelManager.loadedModels.first {
+            if let first = node.modelManager.chatModels.first {
                 let name = first.name
                 return name.count > 20 ? String(name.prefix(18)) + "…" : name
             }
-            return "No model"
+            return node.modelManager.hasOnlyEmbeddingModels ? "Not a chat model" : "No model"
         }
     }
 
@@ -662,7 +669,7 @@ struct ChatView: View {
         case .network:
             return networkReachable ? .sporeGreen : (isOnline ? .computeRed : .ledgerGold)
         case .onDevice:
-            return node.modelManager.loadedModels.isEmpty ? .ledgerGold : .sporeGreen
+            return node.modelManager.chatModels.isEmpty ? .ledgerGold : .sporeGreen
         }
     }
 
@@ -677,7 +684,10 @@ struct ChatView: View {
             let model = Preferences.shared.remoteModel
             return model.isEmpty ? (endpoint.isEmpty ? "Public network" : endpoint) : model
         case .onDevice:
-            if let first = node.modelManager.loadedModels.first { return first.name }
+            if let first = node.modelManager.chatModels.first { return first.name }
+            if node.modelManager.hasOnlyEmbeddingModels {
+                return "Embedding model loaded — it cannot chat. Load a chat model."
+            }
             return node.modelManager.localFiles.isEmpty
                 ? "No models — download from Models tab"
                 : "\(node.modelManager.localFiles.count) on disk — select in Models tab"
@@ -805,7 +815,7 @@ struct ChatView: View {
                     scanTask = Task {
                         try? await Task.sleep(for: .milliseconds(300))
                         guard !Task.isCancelled else { return }
-                        let hasLocal = !node.modelManager.loadedModels.isEmpty
+                        let hasLocal = !node.modelManager.chatModels.isEmpty
                         scanResult = guard_.scan(newValue, trustLevel: route == .onDevice ? .honor : .strict, hasLocalModel: hasLocal)
                     }
                 }

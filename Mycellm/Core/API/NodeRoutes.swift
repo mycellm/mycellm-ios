@@ -32,7 +32,10 @@ enum NodeRoutes {
         let connectivity = node.connectivity
         let deviceSnapshot = await MainActor.run { DeviceState.capture(connectivity: connectivity) }
         let role = await MainActor.run {
-            DeviceState.effectiveRole(hasLoadedModels: !models.isEmpty)
+            DeviceState.effectiveRole(
+                hasLoadedModels: models.contains {
+                    !EmbeddingModels.isEmbeddingModel($0.name)
+                })
         }
 
         return [

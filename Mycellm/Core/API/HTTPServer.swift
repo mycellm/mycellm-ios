@@ -221,6 +221,32 @@ actor HTTPServer {
 
             let engine = nodeService.modelManager.engine
             let modelName = req.model
+
+            // ⚠️ AN EMBEDDING MODEL CANNOT GENERATE, AND FAILS SILENTLY IF ASKED.
+            // MiniLM/BERT-family models are encoder-only: there is no
+            // language-modelling head, so the logits are meaningless and
+            // sampling wanders into the vocabulary's reserved `[unusedNN]`
+            // slots. The node returned all of that as HTTP 200 with
+            // finish_reason "stop" — a success no caller could tell from a
+            // real answer.
+            //
+            // The classification already existed and was already correct
+            // (/v1/models/capabilities reports tags ["embedding"]); nothing
+            // consulted it before generating. This is the mirror of the
+            // /v1/embeddings guard: that one refuses embeddings on a chat
+            // model, this one refuses chat on an embedding model.
+            if let serving = await MainActor.run(body: {
+                nodeService.modelManager.loadedModels.first {
+                    $0.name == modelName || $0.filename == modelName
+                }?.name ?? nodeService.modelManager.loadedModels.first?.name
+            }), EmbeddingModels.isEmbeddingModel(serving) {
+                return try Self.json(OpenAIRoutes.errorBody(
+                    "\(serving) is an embedding model and cannot generate text. "
+                    + "Load a chat model, or send this request to /v1/embeddings.",
+                    type: "invalid_request_error",
+                    code: "model_not_chat_capable"), status: .badRequest)
+            }
+
             let reasoningExclude = OpenAIRoutes.resolveReasoningExclude(req.reasoning)
             let requestedTools = req.tools ?? []
             // Tools + streaming aren't combined yet — the parser needs the

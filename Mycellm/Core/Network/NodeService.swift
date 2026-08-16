@@ -311,7 +311,14 @@ final class NodeService: @unchecked Sendable {
             // the next announce — self-protecting, and it needs no agreement
             // from any scheduler in the fleet.
             role: await MainActor.run {
-                DeviceState.effectiveRole(hasLoadedModels: !publicModels.isEmpty)
+                // Embedding models excluded: they cannot generate, and
+                // on-device embedding execution is gated off — so a node
+                // holding only one can serve nothing and must not advertise
+                // itself as a seeder that peers route chat to.
+                DeviceState.effectiveRole(
+                    hasLoadedModels: publicModels.contains {
+                        !EmbeddingModels.isEmbeddingModel($0.name)
+                    })
             },
             version: NetworkConfig.version,
             networkIds: networkIds
@@ -645,7 +652,9 @@ final class NodeService: @unchecked Sendable {
         return (result.text, result.promptTokens, result.completionTokens)
     }
 
-    var hasLoadedModel: Bool { !modelManager.loadedModels.isEmpty }
+    /// A model that can hold a conversation — not merely something in memory.
+    /// Callers use this to decide whether on-device chat is possible at all.
+    var hasLoadedModel: Bool { !modelManager.chatModels.isEmpty }
 
     func resetInferenceContext() async {
         try? await modelManager.engine.resetContext()

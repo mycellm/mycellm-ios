@@ -9,7 +9,7 @@ version of the Python [mycellm](https://github.com/mycellm/mycellm) core whose
 protocol and API surface this build matches. A release can bump one without the
 other.
 
-## [1.2.0] — 2026-08-15 · build 30 · core parity 0.7.1
+## [1.2.0] — 2026-08-16 · build 31 · core parity 0.7.1
 
 **Leaf-node API parity, plus the two things real hardware exposed.** A dashboard
 or fleet tool pointed at an iOS node now manages it the same way it manages a
@@ -45,6 +45,25 @@ could have shown.
   bootstrap is normal rather than a fault to hunt for.
 - **Settings → Privacy Guard → Rules showed two disclosure chevrons.**
   `NavigationLink` draws its own; the label added another.
+- **Chatting with an embedding model produced `[unusedNN]` gibberish, reported
+  as success.** A device whose only loaded model was `all-MiniLM-L6-v2`
+  answered every message with `[unused34][unused20][unused22]…` — over the API
+  as **HTTP 200 with `finish_reason: "stop"`**, so no caller could tell the
+  difference between that and a real answer.
+
+  MiniLM/BERT-family models are encoder-only: no language-modelling head, so
+  the logits are meaningless and sampling lands in the vocabulary's reserved
+  `[unusedNN]` slots. The chat UI picked `loadedModels.first` and the route
+  generated with whatever was loaded; neither asked whether the model could
+  generate. The classification to prevent it already existed and was already
+  correct — `/v1/models/capabilities` reported `tags: ["embedding"]`
+  throughout. Nothing consulted it.
+
+  Now: `/v1/chat/completions` refuses with `model_not_chat_capable` in the
+  OpenAI error envelope, the chat UI selects a chat-capable model and says so
+  plainly when only an embedding model is loaded, and **the node no longer
+  advertises itself as a `seeder`** on the strength of one — it could serve
+  nothing, yet peers were routing chat to it.
 
 ### Security
 

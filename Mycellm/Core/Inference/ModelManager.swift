@@ -12,6 +12,36 @@ final class ModelManager: @unchecked Sendable {
 
     let engine = InferenceEngine()
 
+    /// Loaded models that can actually generate text.
+    ///
+    /// ⚠️ "LOADED" AND "CAN CHAT" ARE NOT THE SAME THING, AND TREATING THEM AS
+    /// ONE SHIPPED A BUG. An embedding model (MiniLM/BERT family) is
+    /// encoder-only: no language-modelling head, so generation samples from
+    /// meaningless logits and lands in the vocabulary's reserved `[unusedNN]`
+    /// slots. A device whose only loaded model was `all-MiniLM-L6-v2` answered
+    /// every chat with `[unused34][unused20]…` because the UI picked
+    /// `loadedModels.first` without asking whether it could generate.
+    ///
+    /// Anything choosing a model *to chat with* reads this; `loadedModels`
+    /// stays the honest list of what is in memory, which is what the model
+    /// screens and the node's own reporting want.
+    var chatModels: [LoadedModel] { Self.chatCapable(loadedModels) }
+
+    /// True when models are loaded but none of them can chat — the state that
+    /// needs its own message, because "no model loaded" would be a lie and
+    /// "ready" would be worse.
+    var hasOnlyEmbeddingModels: Bool { Self.onlyEmbedding(loadedModels) }
+
+    /// Pure forms, so the rule can be tested without standing up a manager and
+    /// mutating its private state.
+    static func chatCapable(_ models: [LoadedModel]) -> [LoadedModel] {
+        models.filter { !EmbeddingModels.isEmbeddingModel($0.name) }
+    }
+
+    static func onlyEmbedding(_ models: [LoadedModel]) -> Bool {
+        !models.isEmpty && chatCapable(models).isEmpty
+    }
+
     struct LoadedModel: Identifiable, Sendable {
         let id = UUID()
         let name: String
