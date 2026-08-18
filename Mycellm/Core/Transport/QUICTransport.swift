@@ -171,51 +171,42 @@ actor QUICTransport {
     // MARK: - Streaming Request
 
     /// Pending stream continuations keyed by request ID.
-    private var streamContinuations: [String: AsyncThrowingStream<MessageEnvelope, Error>.Continuation] = [:]
+    /// Request-id → stream correlation. See `StreamRegistry` for why this is a
+    /// separate, network-free type.
+    private let streams = StreamRegistry()
 
     /// Send a streaming inference request and yield response chunks as they arrive.
     /// The returned stream emits INFERENCE_STREAM messages until INFERENCE_DONE.
+    ///
+    /// ⚠️ REGISTRATION HAPPENS BEFORE THE SEND, AND BEFORE THIS RETURNS. It used
+    /// to happen inside a detached `Task`, so frames from a fast peer could
+    /// arrive at a registry that had not been told about the request yet — they
+    /// were dropped silently and the caller waited out the idle timeout. The
+    /// send must come after registration, never the other way round.
     func requestStream(_ message: MessageEnvelope) -> AsyncThrowingStream<MessageEnvelope, Error> {
         let requestId = message.id
-        return AsyncThrowingStream { continuation in
-            Task {
-                self.streamContinuations[requestId] = continuation
-                do {
-                    try await self.send(message)
-                } catch {
-                    self.streamContinuations.removeValue(forKey: requestId)
-                    continuation.finish(throwing: error)
-                }
-                continuation.onTermination = { _ in
-                    Task { await self.cancelStream(requestId) }
-                }
+        let stream = streams.register(requestId)
+        Task {
+            do {
+                try await self.send(message)
+            } catch {
+                await self.failStream(requestId, error)
             }
         }
+        return stream
     }
 
     /// Route an incoming streaming message to the correct continuation.
     func handleStreamMessage(_ envelope: MessageEnvelope) -> Bool {
-        guard let continuation = streamContinuations[envelope.id] else { return false }
-        switch envelope.type {
-        case .inferenceStream:
-            continuation.yield(envelope)
-            return true
-        case .inferenceDone:
-            continuation.finish()
-            streamContinuations.removeValue(forKey: envelope.id)
-            return true
-        case .error:
-            let msg = envelope.payload["error_message"]?.stringValue ?? "Peer error"
-            continuation.finish(throwing: MycellmError.transportError(msg))
-            streamContinuations.removeValue(forKey: envelope.id)
-            return true
-        default:
-            return false
-        }
+        streams.deliver(envelope)
     }
 
-    private func cancelStream(_ requestId: String) {
-        streamContinuations.removeValue(forKey: requestId)
+    private func failStream(_ requestId: String, _ error: Error) {
+        streams.fail(requestId, error)
+    }
+
+    func cancelStream(_ requestId: String) {
+        streams.cancel(requestId)
     }
 
     var isConnected: Bool { connected }
