@@ -269,6 +269,7 @@ actor MLXBackend: InferenceBackend {
 
         let augmented = injectToolsIntoSystem(messages, tools: tools)
         let chat = Self.asChatMessages(augmented)
+        let tmplContext = Self.templateContext(for: loadedModel ?? "")
         let parameters = Self.makeParameters(maxTokens: maxTokens, temperature: temperature)
         let startTime = Date()
 
@@ -280,7 +281,8 @@ actor MLXBackend: InferenceBackend {
         let modelNameSnap = loadedModel ?? ""
         let (rawText, promptTokens, completionTokens) = try await container.perform { context in
             // The MODEL'S OWN template -> token ids. See `promptTokens`.
-            let fullTokens = Self.promptTokens(context.tokenizer, messages: chat)
+            let fullTokens = Self.promptTokens(
+                context.tokenizer, messages: chat, additionalContext: tmplContext)
             let resolved = try reuseEnabled
                 ? Self.resolveCachedInput(context: context, fullTokens: fullTokens,
                                           parameters: parameters, store: store, modelName: modelNameSnap)
@@ -345,6 +347,7 @@ actor MLXBackend: InferenceBackend {
                     }
                     let augmented = self.injectToolsIntoSystem(messages, tools: tools)
                     let chat = Self.asChatMessages(augmented)
+                    let tmplContext = Self.templateContext(for: self.loadedModel ?? "")
                     let parameters = Self.makeParameters(maxTokens: maxTokens, temperature: temperature)
                     let startTime = Date()
 
@@ -355,7 +358,8 @@ actor MLXBackend: InferenceBackend {
                     let store = self.kvStore
                     let modelNameSnap = self.loadedModel ?? ""
                     let count: Int = try await container.perform { context in
-                        let fullTokens = Self.promptTokens(context.tokenizer, messages: chat)
+                        let fullTokens = Self.promptTokens(
+                            context.tokenizer, messages: chat, additionalContext: tmplContext)
                         let resolved = try reuseEnabled
                             ? Self.resolveCachedInput(context: context, fullTokens: fullTokens,
                                                       parameters: parameters, store: store, modelName: modelNameSnap)
@@ -709,18 +713,44 @@ actor MLXBackend: InferenceBackend {
     /// Templates are per-model data that ships in `tokenizer_config.json`, so
     /// hardcoding one format means every new model family is a coin flip.
     static func promptTokens(
-        _ tokenizer: any MLXLMCommon.Tokenizer, messages: [[String: any Sendable]]
+        _ tokenizer: any MLXLMCommon.Tokenizer,
+        messages: [[String: any Sendable]],
+        additionalContext: [String: any Sendable]? = nil
     ) -> [Int] {
         // The adapter already falls back to ChatML for a template-less
         // tokenizer; this guards the case where `context.tokenizer` is some
         // other implementation that throws instead.
         if let tokens = try? tokenizer.applyChatTemplate(
-            messages: messages, tools: nil, additionalContext: nil
+            messages: messages, tools: nil, additionalContext: additionalContext
         ), !tokens.isEmpty {
             return tokens
         }
         return tokenizer.encode(
             text: MLXTokenizerAdapter.chatMLPrompt(messages), addSpecialTokens: false)
+    }
+
+    /// Template kwargs for a model, from its reasoning dialect.
+    ///
+    /// ⚠️ `ReasoningDialects.Dialect.templateKwargSuppress` HAD NO CONSUMER.
+    /// The Qwen3 entry has declared `enable_thinking = false` all along and
+    /// nothing ever passed it to a chat template, so a hybrid-thinking model on
+    /// this device always ran with thinking ON.
+    ///
+    /// That is not cosmetic on a phone. Qwen3.5-4B answering "why is the sky
+    /// blue" spent all 300 tokens of its budget writing "Thinking Process: 1.
+    /// Analyze the Request..." and never reached the answer. Worse, this family
+    /// writes its reasoning as plain prose rather than wrapping it in <think>,
+    /// so `splitReasoning` cannot separate it either — the thinking IS the
+    /// reply. Suppressing at the template is the only place it can be stopped.
+    ///
+    /// Follow-up: this applies the dialect's suppression unconditionally. A
+    /// caller asking for reasoning (`reasoning.exclude = false`) should be able
+    /// to turn thinking back on, which needs the flag threaded down to the
+    /// backend — it does not reach here today.
+    static func templateContext(for modelName: String) -> [String: any Sendable]? {
+        guard let suppress = ReasoningDialects.dialectFor(modelName).templateKwargSuppress
+        else { return nil }
+        return [suppress.key: suppress.value]
     }
 
     /// Sum of all file sizes in a directory (for memory-fit check).

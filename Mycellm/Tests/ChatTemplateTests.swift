@@ -113,5 +113,55 @@ final class ChatTemplateTests: XCTestCase {
         XCTAssertEqual(chat.map { $0["content"] as? String },
                        (0..<10).map { "m\($0)" })
     }
+
+    // MARK: - Thinking suppression reaches the template
+
+    func testAQwen3FamilyModelSuppressesThinkingViaTheTemplate() {
+        // The dialect has declared this since it was written and nothing read
+        // it. On a phone the consequence was a 300-token budget spent writing
+        // "Thinking Process: 1. Analyze the Request..." and never answering.
+        let ctx = MLXBackend.templateContext(for: "Qwen3.5-4B-MLX-4bit")
+        XCTAssertEqual(ctx?["enable_thinking"] as? Bool, false)
+    }
+
+    func testANonThinkingModelSendsNoTemplateKwargs() {
+        // Passing enable_thinking to a template that does not declare it is at
+        // best ignored and at worst a render error — send nothing.
+        XCTAssertNil(MLXBackend.templateContext(for: "Qwen2.5-7B-Instruct-4bit"))
+        XCTAssertNil(MLXBackend.templateContext(for: "Llama-3.2-3B-Instruct-4bit"))
+        XCTAssertNil(MLXBackend.templateContext(for: ""))
+    }
+
+    func testTheSuppressionKwargIsForwardedToTheTokenizer() {
+        // Recording double: proves the kwarg reaches applyChatTemplate rather
+        // than being computed and dropped, which is the bug this replaces.
+        final class Recorder: @unchecked Sendable {
+            var seen: [String: any Sendable]?
+        }
+        struct Capturing: MLXLMCommon.Tokenizer, @unchecked Sendable {
+            let rec: Recorder
+            func encode(text: String, addSpecialTokens: Bool) -> [Int] { [1] }
+            func decode(tokenIds: [Int], skipSpecialTokens: Bool) -> String { "" }
+            func convertTokenToId(_ token: String) -> Int? { nil }
+            func convertIdToToken(_ id: Int) -> String? { nil }
+            var bosToken: String? { nil }
+            var eosToken: String? { nil }
+            var unknownToken: String? { nil }
+            func applyChatTemplate(
+                messages: [[String: any Sendable]],
+                tools: [[String: any Sendable]]?,
+                additionalContext: [String: any Sendable]?
+            ) throws -> [Int] {
+                rec.seen = additionalContext
+                return [42]
+            }
+        }
+        let rec = Recorder()
+        _ = MLXBackend.promptTokens(
+            Capturing(rec: rec),
+            messages: MLXBackend.asChatMessages([["role": "user", "content": "hi"]]),
+            additionalContext: MLXBackend.templateContext(for: "Qwen3-8B"))
+        XCTAssertEqual(rec.seen?["enable_thinking"] as? Bool, false)
+    }
 }
 #endif
