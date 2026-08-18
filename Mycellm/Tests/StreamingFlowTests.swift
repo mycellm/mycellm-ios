@@ -194,4 +194,177 @@ final class StreamingFlowTests: XCTestCase {
         Thread.sleep(forTimeInterval: 0.3)
         XCTAssertGreaterThan(box.idleFor(), first, "a silent peer must eventually trip it")
     }
+
+    // MARK: - Out-of-order reassembly
+
+    private func seqChunk(_ id: String, _ seq: Int, _ text: String) -> MessageEnvelope {
+        MessageEnvelope(type: .inferenceStream,
+                        payload: ["text": .string(text), "seq": .int(Int64(seq))],
+                        fromPeer: "peer", id: id, ts: 0)
+    }
+
+    /// ⚠️ THE SCRAMBLED-TEXT BUG, REPRODUCED. Each frame is sent with
+    /// `send_message`, which opens a NEW QUIC stream, and QUIC orders only
+    /// WITHIN a stream. On a real device this produced
+    /// "End-to encryption (-endE2" instead of "End-to-end encryption (E2EE)".
+    /// Every token arrived; the order did not survive.
+    func testFramesAreReassembledIntoSequenceOrder() async throws {
+        let r = StreamRegistry()
+        let stream = r.register("s1")
+        // Delivered shuffled, exactly as the transport can present them.
+        _ = r.deliver(seqChunk("s1", 2, "-end"))
+        _ = r.deliver(seqChunk("s1", 0, "End"))
+        _ = r.deliver(seqChunk("s1", 3, " encryption"))
+        _ = r.deliver(seqChunk("s1", 1, "-to"))
+        _ = r.deliver(done("s1"))
+        let text = try await drain(stream)
+        XCTAssertEqual(text, "End-to-end encryption")
+    }
+
+    func testAFrameIsHeldUntilItsPredecessorArrives() async throws {
+        // Emitting eagerly is what scrambles the text; a gap must block.
+        let r = StreamRegistry()
+        let stream = r.register("s2")
+        _ = r.deliver(seqChunk("s2", 1, "second"))
+        _ = r.deliver(seqChunk("s2", 2, "third"))
+        _ = r.deliver(seqChunk("s2", 0, "first"))
+        _ = r.deliver(done("s2"))
+        let text = try await drain(stream)
+        XCTAssertEqual(text, "firstsecondthird")
+    }
+
+    func testTheTailIsNotLostWhenDONEOvertakesAFrame() async throws {
+        // DONE travels on its own stream too, so it can arrive before a frame
+        // sent earlier. Finishing immediately would truncate the reply.
+        let r = StreamRegistry()
+        let stream = r.register("s3")
+        _ = r.deliver(seqChunk("s3", 0, "alpha"))
+        _ = r.deliver(seqChunk("s3", 2, "gamma"))   // 1 still in flight
+        _ = r.deliver(done("s3"))
+        let text = try await drain(stream)
+        XCTAssertEqual(text, "alphagamma", "held frames must be emitted before finishing")
+    }
+
+    func testAGapAtTerminationEmitsWhatArrivedInOrder() async throws {
+        // A frame that never comes must not cost us the ones that did.
+        let r = StreamRegistry()
+        let stream = r.register("s4")
+        _ = r.deliver(seqChunk("s4", 0, "a"))
+        _ = r.deliver(seqChunk("s4", 3, "d"))
+        _ = r.deliver(seqChunk("s4", 2, "c"))
+        _ = r.deliver(done("s4"))
+        let text = try await drain(stream)
+        XCTAssertEqual(text, "acd", "sequence order preserved across the gap")
+    }
+
+    func testADuplicateFrameIsNotEmittedTwice() async throws {
+        let r = StreamRegistry()
+        let stream = r.register("s5")
+        _ = r.deliver(seqChunk("s5", 0, "x"))
+        _ = r.deliver(seqChunk("s5", 0, "x"))
+        _ = r.deliver(seqChunk("s5", 1, "y"))
+        _ = r.deliver(done("s5"))
+        let text = try await drain(stream)
+        XCTAssertEqual(text, "xy")
+    }
+
+    func testAPeerWithoutSequenceNumbersStillWorks() async throws {
+        // A 0.7.x node sends no `seq`. It must reassemble in arrival order
+        // rather than stalling forever waiting for frame 0.
+        let r = StreamRegistry()
+        let stream = r.register("s6")
+        _ = r.deliver(chunk("s6", "one "))
+        _ = r.deliver(chunk("s6", "two"))
+        _ = r.deliver(done("s6"))
+        let text = try await drain(stream)
+        XCTAssertEqual(text, "one two")
+    }
+
+    func testAnErrorMidStreamStillDeliversWhatWasOrdered() async {
+        let r = StreamRegistry()
+        let stream = r.register("s7")
+        _ = r.deliver(seqChunk("s7", 0, "kept"))
+        _ = r.deliver(seqChunk("s7", 2, "also"))
+        _ = r.deliver(failure("s7", "boom"))
+        var text = ""
+        do {
+            for try await e in stream { text += e.payload["text"]?.stringValue ?? "" }
+            XCTFail("expected a throw")
+        } catch {
+            XCTAssertEqual(text, "keptalso")
+        }
+    }
+
+    // MARK: - Framed multi-message streams
+
+    private func framed(_ env: MessageEnvelope) -> Data {
+        let cbor = env.toCBOR()
+        var out = Data()
+        let n = UInt32(cbor.count).bigEndian
+        withUnsafeBytes(of: n) { out.append(contentsOf: $0) }
+        out.append(cbor)
+        return out
+    }
+
+    /// ⚠️ THE DELIVERY BUG. A streamed reply used to be one QUIC stream PER
+    /// frame: prime sent 40, NWMultiplexGroup delivered 7, and QUIC orders only
+    /// within a stream so those 7 were shuffled. One stream carrying
+    /// length-prefixed frames makes ordering and delivery QUIC's problem
+    /// instead of luck's — but only if the reader can find frame boundaries.
+    func testSeveralFramesAreReadFromOneBuffer() throws {
+        var buffer = Data()
+        for i in 0..<3 { buffer.append(framed(seqChunk("f1", i, "t\(i)"))) }
+
+        var texts: [String] = []
+        var rest = buffer
+        while let (msg, remainder) = QUICTransport.readFrame(rest) {
+            texts.append(msg.payload["text"]?.stringValue ?? "")
+            rest = remainder
+        }
+        XCTAssertEqual(texts, ["t0", "t1", "t2"])
+        XCTAssertTrue(rest.isEmpty, "a fully-consumed buffer must leave nothing")
+    }
+
+    func testAPartialFrameIsLeftInTheBufferUntilComplete() throws {
+        // TCP/QUIC hand over arbitrary byte counts; a frame split across two
+        // receives must not be parsed early or dropped.
+        let whole = framed(seqChunk("f2", 0, "hello"))
+        let firstHalf = whole.prefix(whole.count - 3)
+        XCTAssertNil(QUICTransport.readFrame(Data(firstHalf)),
+                     "an incomplete frame must not parse")
+
+        let (msg, rest) = try XCTUnwrap(QUICTransport.readFrame(whole))
+        XCTAssertEqual(msg.payload["text"]?.stringValue, "hello")
+        XCTAssertTrue(rest.isEmpty)
+    }
+
+    func testATruncatedLengthPrefixIsNotAFrame() {
+        XCTAssertNil(QUICTransport.readFrame(Data([0x00, 0x01])))
+        XCTAssertNil(QUICTransport.readFrame(Data()))
+    }
+
+    func testAnAbsurdLengthIsRejectedRatherThanBufferedForever() {
+        // An unframed CBOR message read as a frame yields a nonsense length.
+        // Rejecting it lets the reader fall back to the legacy single-message
+        // path instead of waiting for bytes that will never come.
+        var buffer = Data([0xFF, 0xFF, 0xFF, 0xFF])
+        buffer.append(Data(repeating: 0, count: 16))
+        XCTAssertNil(QUICTransport.readFrame(buffer))
+    }
+
+    func testFramesAndTheTerminalFrameShareOneStream() throws {
+        // The whole reply — chunks then DONE — arrives as one buffer.
+        var buffer = Data()
+        buffer.append(framed(seqChunk("f3", 0, "part1")))
+        buffer.append(framed(seqChunk("f3", 1, "part2")))
+        buffer.append(framed(done("f3")))
+
+        var types: [MessageType] = []
+        var rest = buffer
+        while let (msg, remainder) = QUICTransport.readFrame(rest) {
+            types.append(msg.type)
+            rest = remainder
+        }
+        XCTAssertEqual(types, [.inferenceStream, .inferenceStream, .inferenceDone])
+    }
 }

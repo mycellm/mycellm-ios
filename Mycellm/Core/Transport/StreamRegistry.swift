@@ -18,6 +18,9 @@ final class StreamRegistry {
     typealias Continuation = AsyncThrowingStream<MessageEnvelope, Error>.Continuation
 
     private var continuations: [String: Continuation] = [:]
+    /// Per-request reassembly state for out-of-order frames.
+    private var nextSeq: [String: Int] = [:]
+    private var held: [String: [Int: MessageEnvelope]] = [:]
 
     var activeCount: Int { continuations.count }
 
@@ -30,6 +33,8 @@ final class StreamRegistry {
         let (stream, continuation) = AsyncThrowingStream<MessageEnvelope, Error>
             .makeStream(bufferingPolicy: .unbounded)
         continuations[id] = continuation
+        nextSeq[id] = 0
+        held[id] = [:]
         return stream
     }
 
@@ -39,37 +44,92 @@ final class StreamRegistry {
         guard let continuation = continuations[envelope.id] else { return false }
         switch envelope.type {
         case .inferenceStream:
-            continuation.yield(envelope)
+            // ⚠️ FRAMES ARRIVE OUT OF ORDER, AND THAT IS NOT A BUG IN QUIC.
+            // The peer sends each frame with `send_message`, which opens a NEW
+            // stream per message; QUIC guarantees ordering only WITHIN a
+            // stream. Yielding in arrival order produced "End-to encryption
+            // (-endE2" instead of "End-to-end encryption (E2EE)" — every token
+            // present, shuffled. That reads as a broken model rather than a
+            // transport fault, which is exactly why it survived so long.
+            //
+            // Frames carry `seq`. A peer too old to send one is reassembled in
+            // arrival order, as before, so mixed-version fleets still work.
+            guard let seq = envelope.payload["seq"]?.intValue else {
+                continuation.yield(envelope)
+                return true
+            }
+            let want = nextSeq[envelope.id] ?? 0
+            if seq < want { return true }          // duplicate/late — already emitted
+            held[envelope.id, default: [:]][seq] = envelope
+            flush(envelope.id, into: continuation)
             return true
         case .inferenceDone, .inferenceResp:
+            // DONE can overtake a frame it was sent after — same per-message
+            // stream race. Emit everything still held, in order, before
+            // finishing, or the tail of the reply is lost.
+            drainHeld(envelope.id, into: continuation)
             continuation.finish()
-            continuations.removeValue(forKey: envelope.id)
+            cleanup(envelope.id)
             return true
         case .error:
             let message = envelope.payload["error_message"]?.stringValue ?? "Peer error"
+            drainHeld(envelope.id, into: continuation)
             continuation.finish(throwing: MycellmError.transportError(message))
-            continuations.removeValue(forKey: envelope.id)
+            cleanup(envelope.id)
             return true
         default:
             return false
         }
     }
 
+    /// Emit every contiguous frame starting at the one we are waiting for.
+    private func flush(_ id: String, into continuation: Continuation) {
+        var want = nextSeq[id] ?? 0
+        while let next = held[id]?.removeValue(forKey: want) {
+            continuation.yield(next)
+            want += 1
+        }
+        nextSeq[id] = want
+    }
+
+    /// Emit whatever is held, in sequence order, gaps and all. Used at
+    /// termination: a missing frame is not coming, and the text we do have
+    /// beats discarding the tail.
+    private func drainHeld(_ id: String, into continuation: Continuation) {
+        guard let pending = held[id], !pending.isEmpty else { return }
+        for key in pending.keys.sorted() {
+            if let env = pending[key] { continuation.yield(env) }
+        }
+        held[id] = [:]
+    }
+
+    private func cleanup(_ id: String) {
+        continuations.removeValue(forKey: id)
+        nextSeq.removeValue(forKey: id)
+        held.removeValue(forKey: id)
+    }
+
     /// End a stream that failed before or during transmission.
     func fail(_ id: String, _ error: Error) {
-        guard let continuation = continuations.removeValue(forKey: id) else { return }
+        guard let continuation = continuations[id] else { return }
+        drainHeld(id, into: continuation)
         continuation.finish(throwing: error)
+        cleanup(id)
     }
 
     func cancel(_ id: String) {
-        guard let continuation = continuations.removeValue(forKey: id) else { return }
+        guard let continuation = continuations[id] else { return }
+        drainHeld(id, into: continuation)
         continuation.finish()
+        cleanup(id)
     }
 
     /// Terminate everything — the connection went away.
     func failAll(_ error: Error) {
         let all = continuations
+        for (id, c) in all { drainHeld(id, into: c); c.finish(throwing: error) }
         continuations.removeAll()
-        for (_, c) in all { c.finish(throwing: error) }
+        nextSeq.removeAll()
+        held.removeAll()
     }
 }

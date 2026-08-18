@@ -69,6 +69,56 @@ actor HTTPServer {
             try Self.json(await NodeRoutes.status(node: nodeService))
         }
 
+        // ── Network chat (drives the SAME path the chat UI uses) ──
+        //
+        // ⚠️ THIS EXISTS SO THE NETWORK CHAT PATH CAN BE TESTED WITHOUT A HUMAN.
+        // Streaming here was broken three times running, and each round cost a
+        // build, an install, and someone typing a message by hand — during
+        // which a wrong fix and an unshipped right one are indistinguishable.
+        // The response reports `chunks`, and `chunks > 1` is the whole question:
+        // it is the difference between streaming and a reply that arrives in
+        // one piece, which is exactly what a person watching a chat bubble
+        // cannot report reliably.
+        //
+        // Body: {"messages":[{role,content}], "model":"…", "transport":"quic"|"http"}
+        router.post("/v1/node/chat/network") { request, _ -> Response in
+            let body = try await Self.parseBody(request)
+            let rawMessages = (body["messages"] as? [[String: Any]]) ?? []
+            guard !rawMessages.isEmpty else {
+                return try Self.error("messages required")
+            }
+            let messages = rawMessages.map {
+                RemoteClient.ChatMessage(
+                    role: ($0["role"] as? String) ?? "user",
+                    content: ($0["content"] as? String) ?? "")
+            }
+            let model = (body["model"] as? String) ?? "default"
+            let transport: NetworkChatEngine.Transport =
+                ((body["transport"] as? String) == "http") ? .http : .quic
+            let showReasoning = (body["show_reasoning"] as? Bool) ?? false
+
+            let remote = RemoteClient()
+            await remote.configure(
+                endpoint: UserDefaults.standard.string(forKey: "remote_endpoint") ?? "",
+                apiKey: UserDefaults.standard.string(forKey: "remote_api_key") ?? "")
+            let engine = NetworkChatEngine(remote: remote, bootstrap: nodeService.bootstrapClient)
+            let outcome = await engine.send(
+                messages: messages, model: model, transport: transport,
+                showReasoning: showReasoning, onChunk: { _ in })
+
+            return try Self.json([
+                "text": outcome.text,
+                "reasoning": outcome.reasoning,
+                "routed_via": outcome.routedVia,
+                "chunks": outcome.chunks,
+                "did_stream": outcome.didStream,
+                "first_chunk_ms": outcome.firstChunkMs as Any,
+                "total_ms": outcome.totalMs,
+                "error": outcome.error as Any,
+                "quic_error": outcome.quicError as Any,
+            ])
+        }
+
         router.get("/v1/node/system") { _, _ -> Response in
             try Self.json(NodeRoutes.system())
         }

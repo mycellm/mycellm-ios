@@ -177,6 +177,17 @@ actor BootstrapClient {
             fromPeer: peerId
         )
 
+        // ⚠️ NOTHING USED TO WATCH FOR THE LINK DYING AFTER THIS POINT. The
+        // transport only reported failures during the initial connect, so a
+        // group that died later — a bootstrap restart, a network change — left
+        // the app showing Connected while every send failed with "Failed to
+        // create stream from group". It never recovered on its own; the app had
+        // to be killed. Network chat "working once and then never again" was
+        // this, not the streaming code.
+        await qt.setDisconnectHandler { [weak self] reason in
+            Task { await self?.handleQUICFailure("Link lost: \(reason)") }
+        }
+
         do {
             try await qt.send(envelope)
             // Wait briefly for data to flush over the wire

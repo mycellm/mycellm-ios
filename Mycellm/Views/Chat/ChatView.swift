@@ -985,6 +985,17 @@ struct ChatView: View {
         // Try QUIC streaming first (token-by-token), fall back to HTTP
         let useQUICStream = node.connection.bootstrapState == .connected && node.connection.bootstrapTransport == .quic
 
+        // TEMPORARY: network chat has now failed to stream across three
+        // different fixes, each time diagnosed from a device by hand. These go
+        // to LogBroadcaster (served by /v1/node/logs) so the path actually
+        // taken can be read remotely instead of inferred.
+        LogBroadcaster.shared.info(
+            "chat",
+            "network send: quicStream=\(useQUICStream) " +
+            "bootstrapState=\(node.connection.bootstrapState) " +
+            "transport=\(node.connection.bootstrapTransport) " +
+            "endpointSet=\(!Preferences.shared.remoteEndpoint.isEmpty) model=\(model)")
+
         streamTask = Task {
             do {
                 if useQUICStream {
@@ -1000,7 +1011,11 @@ struct ChatView: View {
                             guard !Task.isCancelled else { break }
                             mutate(responseId) { $0.content += text }
                             tokenCount += 1
+                            if tokenCount <= 3 || tokenCount % 25 == 0 {
+                                LogBroadcaster.shared.info("chat", "quic chunk #\(tokenCount) len=\(text.count)")
+                            }
                         }
+                        LogBroadcaster.shared.info("chat", "quic stream ended after \(tokenCount) chunks")
                         quicSucceeded = true
                         mutate(responseId) { msg in
                             msg.tokenCount = tokenCount
@@ -1048,6 +1063,10 @@ struct ChatView: View {
                             if !chunk.content.isEmpty {
                                 received = true
                                 tokenCount += 1
+                                if tokenCount <= 3 || tokenCount % 25 == 0 {
+                                    LogBroadcaster.shared.info(
+                                        "chat", "sse chunk #\(tokenCount) len=\(chunk.content.count)")
+                                }
                                 mutate(responseId) { $0.content += chunk.content }
                             }
                             if !chunk.reasoning.isEmpty {
@@ -1056,6 +1075,8 @@ struct ChatView: View {
                                 }
                             }
                         }
+                        LogBroadcaster.shared.info(
+                            "chat", "sse stream ended: received=\(received) chunks=\(tokenCount)")
                         if received {
                             mutate(responseId) { msg in
                                 msg.tokenCount = tokenCount

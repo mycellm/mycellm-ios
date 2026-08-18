@@ -44,7 +44,15 @@ actor QUICTransport {
 
         let resolver = ContinuationResolver<Void>()
 
-        grp.stateUpdateHandler = { state in
+        // ⚠️ THIS HANDLER USED TO ONLY RESOLVE THE INITIAL CONNECT. Once
+        // `connect` returned, a group that later failed or was cancelled left
+        // `connected == true` forever: nothing flipped the flag and nothing told
+        // BootstrapClient to reconnect. Every subsequent send then died with
+        // "Failed to create stream from group" while the UI still showed
+        // Connected — the exact state the iPad was in after the bootstrap
+        // restarted, and the reason network chat worked once and then never
+        // again until the app was killed by hand.
+        grp.stateUpdateHandler = { [weak self] state in
             Log.quic.info("Group state: \(String(describing: state))")
             switch state {
             case .ready:
@@ -52,8 +60,14 @@ actor QUICTransport {
             case .failed(let error):
                 Log.quic.info("Group failed: \(error.localizedDescription)")
                 resolver.resumeIfNeeded(throwing: MycellmError.transportError("QUIC: \(error)"))
+                Task { await self?.markDisconnected("QUIC group failed: \(error.localizedDescription)") }
             case .cancelled:
                 resolver.resumeIfNeeded(throwing: MycellmError.transportError("QUIC cancelled"))
+                Task { await self?.markDisconnected("QUIC group cancelled") }
+            case .waiting(let error):
+                // Waiting means the path went away — treat a prolonged wait as
+                // a drop rather than sitting on a connection that cannot send.
+                Log.quic.info("Group waiting: \(error.localizedDescription)")
             default:
                 break
             }
@@ -66,6 +80,26 @@ actor QUICTransport {
 
         connected = true
         Log.quic.info(" Connected to \(host):\(port)")
+    }
+
+    /// Callback invoked once when the transport goes from up to down, so the
+    /// owner can reconnect. Set by BootstrapClient.
+    private var onDisconnect: (@Sendable (String) -> Void)?
+
+    func setDisconnectHandler(_ handler: @escaping @Sendable (String) -> Void) {
+        onDisconnect = handler
+    }
+
+    /// Transition to down exactly once, failing everything in flight.
+    ///
+    /// Pending streams are failed rather than left to their own idle timeouts:
+    /// a caller waiting 20s for a connection that is already gone is 20s of a
+    /// spinner it did not need to show.
+    func markDisconnected(_ reason: String) {
+        guard connected else { return }
+        connected = false
+        streams.failAll(MycellmError.transportError(reason))
+        onDisconnect?(reason)
     }
 
     func disconnect() {
@@ -89,6 +123,10 @@ actor QUICTransport {
 
         // Create a new stream from the group
         guard let stream = NWConnection(from: group) else {
+            // A group that cannot produce a stream is dead, whatever its state
+            // handler last said. Say so once here rather than failing every
+            // future send the same way with nobody reconnecting.
+            markDisconnected("stream creation failed")
             throw MycellmError.transportError("Failed to create stream from group")
         }
 
@@ -135,10 +173,23 @@ actor QUICTransport {
         stream.start(queue: .global(qos: .userInitiated))
     }
 
+    /// Read a stream, dispatching every message it carries as it arrives.
+    ///
+    /// ⚠️ THIS USED TO WAIT FOR THE STREAM TO CLOSE AND THEN PARSE EXACTLY ONE
+    /// CBOR MESSAGE, which forced the peer into one-stream-per-message. For a
+    /// token stream that meant a 40-frame reply became 40 separate streams:
+    /// QUIC orders only WITHIN a stream so they raced, and NWMultiplexGroup
+    /// delivered 7 of the 40. The user saw a truncated, scrambled answer and
+    /// then a timeout waiting for frames that had already been sent.
+    ///
+    /// A streamed reply now arrives as ONE stream of length-prefixed frames.
+    /// Each is dispatched the moment it is complete — waiting for the stream to
+    /// end would defeat the point of streaming — and a stream carrying a single
+    /// unframed message still works, so nothing older breaks.
     private func readStream(_ stream: NWConnection) async {
         var buffer = Data()
+        var dispatchedAny = false
 
-        // Read all data until stream completes
         while true {
             let result: (Data?, Bool) = await withCheckedContinuation { cont in
                 stream.receive(minimumIncompleteLength: 1, maximumLength: 65536) { data, _, isComplete, _ in
@@ -146,19 +197,26 @@ actor QUICTransport {
                 }
             }
             if let data = result.0 { buffer.append(data) }
+
+            // Drain every complete frame currently buffered.
+            while let (msg, rest) = Self.readFrame(buffer) {
+                buffer = rest
+                dispatchedAny = true
+                await dispatch(msg)
+            }
+
             if result.1 || buffer.count > 10 * 1024 * 1024 { break }
         }
 
-        guard !buffer.isEmpty else { return }
-        Log.quic.info(" Stream received \(buffer.count) bytes")
-
-        // Parse CBOR
-        guard let msg = try? MessageEnvelope.fromCBOR(buffer) else {
-            Log.quic.info(" Failed to parse incoming message (\(buffer.count) bytes)")
-            return
+        // Legacy shape: a whole stream holding one unframed CBOR message.
+        if !dispatchedAny, !buffer.isEmpty,
+           let msg = try? MessageEnvelope.fromCBOR(buffer) {
+            await dispatch(msg)
         }
-        Log.quic.info(" Parsed: \(msg.type.rawValue) id=\(msg.id)")
+    }
 
+    private func dispatch(_ msg: MessageEnvelope) async {
+        Log.quic.info(" Parsed: \(msg.type.rawValue) id=\(msg.id)")
         if let handler = onMessage, let response = await handler(msg) {
             // Reply on a fresh client-initiated stream. The bootstrap relay's
             // send_and_wait matches the response by message id on ANY stream
@@ -166,6 +224,23 @@ actor QUICTransport {
             // back on), so a new stream — same path NodeHello uses — is correct.
             try? await send(response)
         }
+    }
+
+    /// One length-prefixed frame, and whatever is left. `nil` when the buffer
+    /// does not yet hold a complete frame.
+    ///
+    /// The 4-byte big-endian prefix matches `MessageEnvelope.to_framed()` on
+    /// the Python side. A prefix claiming more than the 10 MB ceiling is
+    /// treated as "not a frame" so a corrupt or unframed stream falls through
+    /// to the legacy single-message path rather than hanging forever.
+    static func readFrame(_ buffer: Data) -> (MessageEnvelope, Data)? {
+        guard buffer.count >= 4 else { return nil }
+        let length = buffer.prefix(4).reduce(Int(0)) { ($0 << 8) | Int($1) }
+        guard length > 0, length <= 10 * 1024 * 1024 else { return nil }
+        guard buffer.count >= 4 + length else { return nil }
+        let payload = buffer.subdata(in: 4..<(4 + length))
+        guard let msg = try? MessageEnvelope.fromCBOR(payload) else { return nil }
+        return (msg, buffer.subdata(in: (4 + length)..<buffer.count))
     }
 
     // MARK: - Streaming Request
