@@ -351,8 +351,28 @@ enum MLXRepo {
                     }
                 }
                 box.task = task
-                box.observation = task.progress.observe(\.completedUnitCount) { p, _ in
-                    onBytes(p.completedUnitCount)
+                // ⚠️ OBSERVE `fractionCompleted`, NOT `completedUnitCount`.
+                // KVO notifications for `completedUnitCount` on a URLSession
+                // task's Progress do not fire reliably; `fractionCompleted` is
+                // the property Foundation actually publishes. Observing the
+                // wrong one meant the callback never ran DURING a transfer, so
+                // a multi-gigabyte shard reported nothing at all — the byte
+                // count only moved when a whole file finished and `install`
+                // pushed an aggregate. On a model that is one 2.8 GB
+                // safetensors plus a handful of small JSONs, that is a progress
+                // bar pinned near zero for the entire download and then a jump
+                // to 100%. Reading `completedUnitCount` inside the handler is
+                // fine — it is the notification that was unreliable, not the
+                // value.
+                box.observation = task.progress.observe(\.fractionCompleted) { p, _ in
+                    let done = p.completedUnitCount
+                    if done > 0 {
+                        onBytes(done)
+                    } else if p.totalUnitCount > 0 {
+                        // Belt and braces: derive bytes from the fraction if the
+                        // counter itself has not been populated yet.
+                        onBytes(Int64(p.fractionCompleted * Double(p.totalUnitCount)))
+                    }
                 }
                 task.resume()
             }
