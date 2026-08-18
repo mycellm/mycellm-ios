@@ -398,10 +398,28 @@ actor BootstrapClient {
         let quicStream = await qt.requestStream(req)
 
         return AsyncThrowingStream { continuation in
+            // ⚠️ THIS IS AN IDLE TIMEOUT, NOT A DEADLINE — and that distinction
+            // is why network chat never streamed.
+            //
+            // The timer below used to be a single `sleep(chunkTimeout)` that
+            // then cancelled the stream unconditionally. Despite the parameter
+            // being named `chunkTimeout`, it was a hard 20-SECOND CAP ON THE
+            // WHOLE GENERATION: tokens could be arriving perfectly and the
+            // stream still died at 20s with "No response from peer". Any answer
+            // longer than a couple of sentences — which is most of them, and
+            // effectively all of them from a phone or a 35B model — was killed
+            // mid-flow, and ChatView rethrows once a token has arrived, so the
+            // user saw an error instead of a partial answer. Streaming
+            // "not working" was this timer, not the transport.
+            //
+            // Now the clock resets on every chunk, so it fires only when the
+            // peer has genuinely gone quiet.
+            let lastChunk = TimestampBox()
             let task = Task {
                 do {
                     for try await chunk in quicStream {
                         guard !Task.isCancelled else { break }
+                        lastChunk.touch()
                         let text = chunk.payload["text"]?.stringValue ?? ""
                         if !text.isEmpty {
                             continuation.yield(text)
@@ -413,11 +431,17 @@ actor BootstrapClient {
                 }
             }
 
-            // Overall timeout — cancels the stream task
+            // Idle watchdog — fires only after `chunkTimeout` with no chunk.
             let timeout = Task {
-                try? await Task.sleep(for: .seconds(chunkTimeout))
-                task.cancel()
-                continuation.finish(throwing: MycellmError.transportError("No response from peer (\(Int(chunkTimeout))s)"))
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .milliseconds(500))
+                    if Task.isCancelled { return }
+                    guard lastChunk.idleFor() > chunkTimeout else { continue }
+                    task.cancel()
+                    continuation.finish(throwing: MycellmError.transportError(
+                        "No response from peer for \(Int(chunkTimeout))s"))
+                    return
+                }
             }
 
             continuation.onTermination = { _ in
@@ -434,6 +458,26 @@ actor BootstrapClient {
         self.transport = transport
         lastError = error
         onStateChange?(newState, transport, error)
+    }
+}
+
+// MARK: - Idle tracking
+
+/// Last-activity timestamp shared between a stream task and its watchdog.
+///
+/// Lock-guarded rather than a bare `var`: the two run on different tasks, and
+/// a torn read here would either kill a healthy stream or let a dead one hang.
+final class TimestampBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var last = Date()
+
+    func touch() {
+        lock.lock(); last = Date(); lock.unlock()
+    }
+
+    func idleFor() -> TimeInterval {
+        lock.lock(); let t = last; lock.unlock()
+        return Date().timeIntervalSince(t)
     }
 }
 

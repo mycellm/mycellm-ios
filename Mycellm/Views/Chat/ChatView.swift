@@ -1024,11 +1024,68 @@ struct ChatView: View {
                         }
                     }
                 } else {
-                    // HTTP path — full response at once
-                    let result = try await remoteClient.completeWithMetadata(
-                        model: model, messages: Array(chatMessages)
-                    )
-                    applyNetworkResult(result, to: responseId, model: model)
+                    // ⚠️ THIS BRANCH USED TO FETCH THE WHOLE ANSWER AT ONCE, and
+                    // it is the branch most network chats actually take — QUIC
+                    // streaming is only chosen when the bootstrap link itself is
+                    // QUIC, and a device talking to the public gateway over
+                    // HTTPS is not. So the user saw a typing indicator and then
+                    // the entire reply appearing in one go, which is exactly
+                    // what "streaming doesn't work" looks like.
+                    //
+                    // `RemoteClient.stream` already existed, fully implemented,
+                    // parsing SSE deltas including reasoning_content. Nothing
+                    // called it from here. The gateway has served `stream: true`
+                    // the whole time.
+                    var tokenCount = 0
+                    var received = false
+                    do {
+                        let httpStream = await remoteClient.stream(
+                            model: model, messages: Array(chatMessages),
+                            showReasoning: Preferences.shared.chatShowReasoning
+                        )
+                        for try await chunk in httpStream {
+                            guard !Task.isCancelled else { break }
+                            if !chunk.content.isEmpty {
+                                received = true
+                                tokenCount += 1
+                                mutate(responseId) { $0.content += chunk.content }
+                            }
+                            if !chunk.reasoning.isEmpty {
+                                mutate(responseId) {
+                                    $0.reasoningContent = ($0.reasoningContent ?? "") + chunk.reasoning
+                                }
+                            }
+                        }
+                        if received {
+                            mutate(responseId) { msg in
+                                msg.tokenCount = tokenCount
+                                let elapsed = Date().timeIntervalSince(msg.startTime)
+                                msg.tokensPerSecond = elapsed > 0 ? Double(tokenCount) / elapsed : 0
+                                msg.modelUsed = model
+                                msg.isStreaming = false
+                                msg.endTime = Date()
+                                msg.routedVia = "http-sse"
+                            }
+                        } else {
+                            // Streamed cleanly but produced nothing — a server
+                            // that ignored `stream: true` would look like this.
+                            // One non-streaming retry rather than a blank reply.
+                            let result = try await remoteClient.completeWithMetadata(
+                                model: model, messages: Array(chatMessages),
+                                showReasoning: Preferences.shared.chatShowReasoning
+                            )
+                            applyNetworkResult(result, to: responseId, model: model)
+                        }
+                    } catch {
+                        // Only safe to retry whole if nothing was shown yet;
+                        // otherwise the reply would be duplicated on screen.
+                        if received || Task.isCancelled { throw error }
+                        let result = try await remoteClient.completeWithMetadata(
+                            model: model, messages: Array(chatMessages),
+                            showReasoning: Preferences.shared.chatShowReasoning
+                        )
+                        applyNetworkResult(result, to: responseId, model: model)
+                    }
                 }
             } catch is CancellationError {
                 mutate(responseId) { $0.endTime = Date(); $0.isStreaming = false }

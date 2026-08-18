@@ -291,7 +291,11 @@ enum MLXRepo {
             request.setValue("bytes=\(have)-", forHTTPHeaderField: "Range")
         }
 
-        let (tmp, response) = try await downloadTask(request, onBytes: { onBytes(have + $0) })
+        // A Range request transfers only the remainder, so that is what the
+        // task's fraction is a fraction OF.
+        let expected = (have > 0 && have < asset.size) ? asset.size - have : asset.size
+        let (tmp, response) = try await downloadTask(
+            request, expectedBytes: expected, onBytes: { onBytes(have + $0) })
         defer { try? FileManager.default.removeItem(at: tmp) }
 
         guard let http = response as? HTTPURLResponse else {
@@ -318,11 +322,28 @@ enum MLXRepo {
         }
     }
 
+    /// Bytes transferred, from a 0…1 fraction and the size we already know.
+    ///
+    /// ⚠️ `URLSessionDownloadTask.progress` IS NOT A BYTE COUNTER. Measured on
+    /// device mid-transfer it reports `completedUnitCount = 5`,
+    /// `totalUnitCount = 100`, `fractionCompleted = 0.795` — an abstract unit
+    /// scale, and one whose counts do not even agree with its own fraction.
+    /// Feeding `completedUnitCount` into a byte total is what pinned the
+    /// progress bar: every callback added the same ~5 to the running figure, so
+    /// the UI sat at the size of the last completed file until the whole model
+    /// finished. Only the fraction is trustworthy, and the manifest already
+    /// tells us how many bytes it is a fraction of.
+    static func bytesFromFraction(_ fraction: Double, expected: Int64) -> Int64 {
+        guard expected > 0, fraction.isFinite, fraction > 0 else { return 0 }
+        return min(Int64(fraction * Double(expected)), expected)
+    }
+
     /// `URLSession.download(for:)` gives no progress, and a download *delegate*
     /// conflicts with the async variant's own file handling — so drive the
     /// completion-handler task and read progress off its `Progress`.
     private static func downloadTask(
-        _ request: URLRequest, onBytes: @escaping @Sendable (Int64) -> Void
+        _ request: URLRequest, expectedBytes: Int64,
+        onBytes: @escaping @Sendable (Int64) -> Void
     ) async throws -> (URL, URLResponse) {
         final class Box: @unchecked Sendable {
             var observation: NSKeyValueObservation?
@@ -365,14 +386,7 @@ enum MLXRepo {
                 // fine — it is the notification that was unreliable, not the
                 // value.
                 box.observation = task.progress.observe(\.fractionCompleted) { p, _ in
-                    let done = p.completedUnitCount
-                    if done > 0 {
-                        onBytes(done)
-                    } else if p.totalUnitCount > 0 {
-                        // Belt and braces: derive bytes from the fraction if the
-                        // counter itself has not been populated yet.
-                        onBytes(Int64(p.fractionCompleted * Double(p.totalUnitCount)))
-                    }
+                    onBytes(Self.bytesFromFraction(p.fractionCompleted, expected: expectedBytes))
                 }
                 task.resume()
             }

@@ -112,4 +112,37 @@ final class DownloadProgressTests: XCTestCase {
         d.bytesPerSecond = 10_000_000        // 2 GB remaining ≈ 200s
         XCTAssertTrue(d.etaDescription.contains("3m"), d.etaDescription)
     }
+
+    // MARK: - Bytes from fraction
+
+    /// ⚠️ MEASURED ON DEVICE: `URLSessionDownloadTask.progress` reports
+    /// `completedUnitCount = 5`, `totalUnitCount = 100`, `fractionCompleted =
+    /// 0.795` mid-transfer. The counts are an abstract unit scale and do not
+    /// even agree with the fraction (5/100 ≠ 0.795). Only the fraction moves
+    /// with the transfer, so bytes come from it and the size we already know.
+    func testBytesComeFromTheFractionAndTheKnownSize() {
+        XCTAssertEqual(MLXRepo.bytesFromFraction(0.5, expected: 1_000_000), 500_000)
+        XCTAssertEqual(MLXRepo.bytesFromFraction(0.7954, expected: 2_800_000_000), 2_227_120_000)
+    }
+
+    func testAnUnknownSizeReportsNothingRatherThanGarbage() {
+        // Better a still bar than a number invented from a unit scale that
+        // has nothing to do with bytes — which is precisely the old bug.
+        XCTAssertEqual(MLXRepo.bytesFromFraction(0.5, expected: 0), 0)
+    }
+
+    func testProgressIsClampedToTheExpectedSize() {
+        // A fraction slightly over 1 must not report more bytes than the file
+        // has; `install` sums these into a total the UI renders as a percent.
+        XCTAssertEqual(MLXRepo.bytesFromFraction(1.02, expected: 1_000), 1_000)
+        XCTAssertEqual(MLXRepo.bytesFromFraction(1.0, expected: 1_000), 1_000)
+    }
+
+    func testNonsenseFractionsReportZero() {
+        XCTAssertEqual(MLXRepo.bytesFromFraction(-0.3, expected: 1_000), 0)
+        XCTAssertEqual(MLXRepo.bytesFromFraction(.nan, expected: 1_000), 0)
+        // Infinity is not "complete", it is a broken reading — report nothing
+        // rather than claiming the file finished.
+        XCTAssertEqual(MLXRepo.bytesFromFraction(.infinity, expected: 1_000), 0)
+    }
 }
