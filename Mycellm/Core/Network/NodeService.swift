@@ -298,19 +298,16 @@ final class NodeService: @unchecked Sendable {
         // mycellm Python advertises "llama.cpp" or "mlx" — match that.
         let backendRaw = await modelManager.engine.backendName  // "MLX" | "llama.cpp" | "none"
         let activeBackendLabel = backendRaw.lowercased() == "mlx" ? "mlx" : "llama.cpp"
-        return Capabilities(
-            models: publicModels.map { m in
-                ModelCapability(name: m.name, backend: activeBackendLabel, scope: m.scope)
-            },
-            hardware: HardwareInfo.capabilitiesHardware(),
-            // ⚠️ A LOADED MODEL IS NOT THE SAME AS BEING ABLE TO SERVE. This is
-            // what peers and the router see, and until now a thermally critical
-            // phone at 5% on battery advertised `seeder` and kept being handed
-            // work it would fail or thermally unload halfway through. The node
-            // demotes itself while it is in no state to serve and re-promotes on
-            // the next announce — self-protecting, and it needs no agreement
-            // from any scheduler in the fleet.
-            role: await MainActor.run {
+        // ⚠️ A LOADED MODEL IS NOT THE SAME AS BEING ABLE TO SERVE. `role` is
+        // what peers and the router see, and until this node demoted itself a
+        // thermally critical phone at 5% on battery advertised `seeder` and kept
+        // being handed work it would fail or thermally unload halfway through.
+        //
+        // Role and constraints are captured in ONE main-actor hop so the two
+        // cannot disagree: advertising `seeder` alongside `thermal_constrained`
+        // from a later reading would be worse than either fact alone.
+        let (role, constraints) = await MainActor.run {
+            (
                 // Embedding models excluded: they cannot generate, and
                 // on-device embedding execution is gated off — so a node
                 // holding only one can serve nothing and must not advertise
@@ -318,8 +315,32 @@ final class NodeService: @unchecked Sendable {
                 DeviceState.effectiveRole(
                     hasLoadedModels: publicModels.contains {
                         !EmbeddingModels.isEmbeddingModel($0.name)
-                    })
+                    }),
+                DeviceState.capabilityConstraints(connectivity: connectivity)
+            )
+        }
+
+        return Capabilities(
+            models: publicModels.map { m in
+                ModelCapability(
+                    name: m.name,
+                    backend: activeBackendLabel,
+                    scope: m.scope,
+                    // ⚠️ THE FLEET-SIDE HALF OF THE EMBEDDING FIX. Build 31
+                    // stopped this node from *accepting* a chat request on an
+                    // embedding model; it did nothing to stop peers from
+                    // *sending* one, because nothing in the advertisement said
+                    // the model could not chat — `tags` carried the fact and no
+                    // router read it. Declaring `["embed"]` makes a 0.8 planner
+                    // exclude it from every generative role instead of
+                    // discovering the refusal by being refused. Non-embedding
+                    // models declare nothing, which means 0.7 semantics and
+                    // keeps them eligible everywhere they already were.
+                    executionRoles: EmbeddingModels.isEmbeddingModel(m.name) ? ["embed"] : []
+                )
             },
+            hardware: HardwareInfo.capabilitiesHardware(constraints: constraints),
+            role: role,
             version: NetworkConfig.version,
             networkIds: networkIds
         )

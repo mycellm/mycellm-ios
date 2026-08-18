@@ -170,4 +170,42 @@ enum DeviceState {
         guard hasLoadedModels, canServe() else { return "consumer" }
         return "seeder"
     }
+
+    /// The subset of `Snapshot` that belongs in a capability advertisement.
+    ///
+    /// ⚠️ NOT THE WHOLE SNAPSHOT, ON PURPOSE. `Snapshot` is the operator view:
+    /// battery percentage, app state, interface name. A capability payload goes
+    /// to every peer on the network and is retained by each of them, so it
+    /// carries only what a scheduler needs to make a routing decision —
+    /// "unfit"/"expensive", not "at 7% on Wi-Fi in the background". Broadcasting
+    /// a phone's charge level to the fleet is telemetry nobody asked for.
+    struct Constraints: Sendable {
+        var power: Bool = false
+        var thermal: Bool = false
+        var networkExpensive: Bool = false
+        var networkConstrained: Bool = false
+    }
+
+    /// Capture the constraint flags for a capability advertisement.
+    ///
+    /// The power rule is deliberately the same one `canServe` applies, so the
+    /// node cannot advertise "unconstrained" while simultaneously demoting
+    /// itself to `consumer` for the same reason.
+    @MainActor
+    static func capabilityConstraints(connectivity: Connectivity) -> Constraints {
+        let device = UIDevice.current
+        if !device.isBatteryMonitoringEnabled { device.isBatteryMonitoringEnabled = true }
+        let level = device.batteryLevel
+        let charging = device.batteryState == .charging || device.batteryState == .full
+        let lowBattery = !charging && level >= 0 && level < 0.20
+        let thermal = ProcessInfo.processInfo.thermalState
+        return Constraints(
+            power: ProcessInfo.processInfo.isLowPowerModeEnabled || lowBattery,
+            // `.serious` is where throughput is already reduced. Waiting for
+            // `.critical` means advertising healthy right up to the failure.
+            thermal: thermal == .serious || thermal == .critical,
+            networkExpensive: connectivity.isExpensive,
+            networkConstrained: connectivity.isConstrained
+        )
+    }
 }

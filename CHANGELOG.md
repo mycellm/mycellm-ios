@@ -9,6 +9,55 @@ version of the Python [mycellm](https://github.com/mycellm/mycellm) core whose
 protocol and API surface this build matches. A release can bump one without the
 other.
 
+## [1.3.0] — unreleased · build 32 · core parity 0.8.0
+
+**This node now tells the fleet what it is actually able to do.** 0.8 adds an
+execution fabric on the Python side that plans a job across several models
+before running any of it. A planner is only as good as what the peers tell it,
+and this node was under-reporting on two counts that both had consequences.
+
+### Added
+
+- **Embedding models declare `execution_roles: ["embed"]`.** Build 31 stopped
+  this node from *accepting* a chat request on an embedding model. It did
+  nothing to stop peers from *sending* one, because nothing in the capability
+  advertisement said the model could not chat — `tags` carried the fact and no
+  router read it. A 0.8 planner reads `execution_roles` and excludes the model
+  from every generative role, so the refusal happens before the request is
+  dispatched rather than after it arrives. Non-embedding models declare
+  nothing, which means 0.7 semantics and leaves them eligible exactly where
+  they already were.
+
+- **Device constraints travel with the advertisement.** `DeviceState` has
+  computed thermal, power and network conditions for `/v1/node/status` for
+  several releases, and this node already demotes itself to `consumer` when it
+  is in no state to serve — but a peer could see only the demotion, never the
+  reason, and never the softer cases where the node keeps serving while
+  throttled. `hardware` now carries `ram_gb`, `available_memory_gb`,
+  `architecture`, `device_class` and the `power` / `thermal` / `network`
+  constraint blocks. Role and constraints are captured in one main-actor hop so
+  the two can never disagree — advertising `seeder` next to a stale
+  `thermal_constrained` from a later reading would be worse than either fact
+  alone.
+
+  Only what a scheduler needs is sent. Battery percentage, interface name and
+  app state stay in `/v1/node/status`: a capability payload goes to every peer
+  and is retained by each of them, and broadcasting a phone's charge level to
+  the fleet is telemetry nobody asked for.
+
+- **Serving-group and parallelism fields decode from peers** — `deployment_id`,
+  `serving_group_id`, `parallelism` — so a peer fronting an external cluster is
+  represented here as what it is rather than as an ordinary model.
+
+### Compatibility
+
+Every new field is omitted when unset, so a 0.7.x or 0.6.3 peer receives a
+byte-identical payload to the one it received before, and this build reads
+their payloads unchanged. That is asserted, not assumed: the test suite decodes
+a real CBOR advertisement produced by the Python node, and the Python suite
+decodes a real one produced by this app. Both fixtures are checked in, so
+neither implementation can drift alone.
+
 ## [1.2.0] — 2026-08-16 · build 31 · core parity 0.7.1
 
 **Leaf-node API parity, plus the two things real hardware exposed.** A dashboard

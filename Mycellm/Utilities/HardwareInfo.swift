@@ -79,11 +79,29 @@ enum HardwareInfo {
     }
 
     /// Build a Capabilities-compatible hardware dict.
-    static func capabilitiesHardware() -> HardwareCapability {
+    ///
+    /// `constraints` is passed in rather than read here because the power,
+    /// thermal and network facts live on the main actor (UIKit owns battery and
+    /// application state) while this is a plain static. Taking them as an
+    /// argument keeps one consistent reading per advertisement instead of three
+    /// separate hops that could disagree with each other.
+    static func capabilitiesHardware(
+        constraints: DeviceState.Constraints = DeviceState.Constraints()
+    ) -> HardwareCapability {
         HardwareCapability(
             gpu: chipName,
             vramGb: totalMemoryGB, // iOS unified memory
-            backend: "metal"
+            backend: "metal",
+            ramGb: totalMemoryGB,
+            availableMemoryGb: availableMemoryGB,
+            architecture: "arm64",
+            // Every device this app runs on is handheld. iPadOS included: it is
+            // still battery-powered and still suspends a backgrounded app.
+            deviceClass: "mobile",
+            powerConstrained: constraints.power,
+            thermalConstrained: constraints.thermal,
+            networkExpensive: constraints.networkExpensive,
+            networkConstrained: constraints.networkConstrained
         )
     }
 
