@@ -997,122 +997,51 @@ struct ChatView: View {
             "endpointSet=\(!Preferences.shared.remoteEndpoint.isEmpty) model=\(model)")
 
         streamTask = Task {
-            do {
-                if useQUICStream {
-                    // Stream over QUIC — tokens arrive one-by-one with per-chunk timeout
-                    let rawMessages = Array(chatMessages).map { ["role": $0.role, "content": $0.content] }
-                    var tokenCount = 0
-                    var quicSucceeded = false
-                    do {
-                        let quicStream = try await node.bootstrapClient.streamInferenceWithTimeout(
-                            model: model, messages: rawMessages
-                        )
-                        for try await text in quicStream {
-                            guard !Task.isCancelled else { break }
-                            mutate(responseId) { $0.content += text }
-                            tokenCount += 1
-                            if tokenCount <= 3 || tokenCount % 25 == 0 {
-                                LogBroadcaster.shared.info("chat", "quic chunk #\(tokenCount) len=\(text.count)")
-                            }
-                        }
-                        LogBroadcaster.shared.info("chat", "quic stream ended after \(tokenCount) chunks")
-                        quicSucceeded = true
-                        mutate(responseId) { msg in
-                            msg.tokenCount = tokenCount
-                            let elapsed = Date().timeIntervalSince(msg.startTime)
-                            msg.tokensPerSecond = elapsed > 0 ? Double(tokenCount) / elapsed : 0
-                            msg.isStreaming = false
-                            msg.endTime = Date()
-                            msg.routedVia = "quic"
-                        }
-                    } catch {
-                        // QUIC failed — fall back to HTTP if no tokens received yet
-                        if tokenCount == 0 && !Task.isCancelled {
-                            let result = try await remoteClient.completeWithMetadata(
-                                model: model, messages: Array(chatMessages),
-                                showReasoning: Preferences.shared.chatShowReasoning
-                            )
-                            applyNetworkResult(result, to: responseId, model: model)
-                            quicSucceeded = true
-                        } else if !quicSucceeded {
-                            throw error
-                        }
-                    }
-                } else {
-                    // ⚠️ THIS BRANCH USED TO FETCH THE WHOLE ANSWER AT ONCE, and
-                    // it is the branch most network chats actually take — QUIC
-                    // streaming is only chosen when the bootstrap link itself is
-                    // QUIC, and a device talking to the public gateway over
-                    // HTTPS is not. So the user saw a typing indicator and then
-                    // the entire reply appearing in one go, which is exactly
-                    // what "streaming doesn't work" looks like.
-                    //
-                    // `RemoteClient.stream` already existed, fully implemented,
-                    // parsing SSE deltas including reasoning_content. Nothing
-                    // called it from here. The gateway has served `stream: true`
-                    // the whole time.
-                    var tokenCount = 0
-                    var received = false
-                    do {
-                        let httpStream = await remoteClient.stream(
-                            model: model, messages: Array(chatMessages),
-                            showReasoning: Preferences.shared.chatShowReasoning
-                        )
-                        for try await chunk in httpStream {
-                            guard !Task.isCancelled else { break }
-                            if !chunk.content.isEmpty {
-                                received = true
-                                tokenCount += 1
-                                if tokenCount <= 3 || tokenCount % 25 == 0 {
-                                    LogBroadcaster.shared.info(
-                                        "chat", "sse chunk #\(tokenCount) len=\(chunk.content.count)")
-                                }
-                                mutate(responseId) { $0.content += chunk.content }
-                            }
-                            if !chunk.reasoning.isEmpty {
-                                mutate(responseId) {
-                                    $0.reasoningContent = ($0.reasoningContent ?? "") + chunk.reasoning
-                                }
-                            }
-                        }
-                        LogBroadcaster.shared.info(
-                            "chat", "sse stream ended: received=\(received) chunks=\(tokenCount)")
-                        if received {
-                            mutate(responseId) { msg in
-                                msg.tokenCount = tokenCount
-                                let elapsed = Date().timeIntervalSince(msg.startTime)
-                                msg.tokensPerSecond = elapsed > 0 ? Double(tokenCount) / elapsed : 0
-                                msg.modelUsed = model
-                                msg.isStreaming = false
-                                msg.endTime = Date()
-                                msg.routedVia = "http-sse"
-                            }
-                        } else {
-                            // Streamed cleanly but produced nothing — a server
-                            // that ignored `stream: true` would look like this.
-                            // One non-streaming retry rather than a blank reply.
-                            let result = try await remoteClient.completeWithMetadata(
-                                model: model, messages: Array(chatMessages),
-                                showReasoning: Preferences.shared.chatShowReasoning
-                            )
-                            applyNetworkResult(result, to: responseId, model: model)
-                        }
-                    } catch {
-                        // Only safe to retry whole if nothing was shown yet;
-                        // otherwise the reply would be duplicated on screen.
-                        if received || Task.isCancelled { throw error }
-                        let result = try await remoteClient.completeWithMetadata(
-                            model: model, messages: Array(chatMessages),
-                            showReasoning: Preferences.shared.chatShowReasoning
-                        )
-                        applyNetworkResult(result, to: responseId, model: model)
-                    }
+            // ⚠️ THE VIEW NO LONGER IMPLEMENTS THIS. Transport selection,
+            // stream assembly and fallback live in `NetworkChatEngine`, which
+            // `POST /v1/node/chat/network` also drives — so what a test
+            // exercises and what a user gets are the same code. While they were
+            // two copies, an end-to-end check could pass against logic the UI
+            // never ran, which is how three "fixes" shipped without fixing
+            // anything the user could see.
+            let engine = NetworkChatEngine(
+                remote: remoteClient, bootstrap: node.bootstrapClient)
+            let outcome = await engine.send(
+                messages: Array(chatMessages),
+                model: model,
+                transport: useQUICStream ? .quic : .http,
+                showReasoning: Preferences.shared.chatShowReasoning
+            ) { fragment in
+                Task { @MainActor in
+                    mutate(responseId) { $0.content += fragment }
                 }
-            } catch is CancellationError {
-                mutate(responseId) { $0.endTime = Date(); $0.isStreaming = false }
-            } catch {
-                await handleNetworkError(error, responseId: responseId, model: model, chatMessages: Array(chatMessages))
             }
+
+            await MainActor.run {
+                mutate(responseId) { msg in
+                    // A single-shot reply is assigned, not appended: nothing
+                    // was streamed into the bubble in that case.
+                    if outcome.routedVia == "http-once" { msg.content = outcome.text }
+                    if !outcome.reasoning.isEmpty { msg.reasoningContent = outcome.reasoning }
+                    if msg.content.isEmpty, let err = outcome.error {
+                        msg.content = "Error: \(err)"
+                        msg.isError = true
+                    }
+                    msg.tokenCount = outcome.chunks
+                    let elapsed = Date().timeIntervalSince(msg.startTime)
+                    msg.tokensPerSecond = elapsed > 0 ? Double(outcome.chunks) / elapsed : 0
+                    msg.modelUsed = model
+                    msg.routedVia = outcome.routedVia
+                    msg.isStreaming = false
+                    msg.endTime = Date()
+                }
+            }
+            LogBroadcaster.shared.info(
+                "chat",
+                "network done: via=\(outcome.routedVia) chunks=\(outcome.chunks) " +
+                "streamed=\(outcome.didStream) first=\(outcome.firstChunkMs.map(String.init) ?? "-")ms " +
+                "total=\(outcome.totalMs)ms quicError=\(outcome.quicError ?? "none")")
+
             if let i = idx(for: responseId) { persist(messages[i]) }
             isGenerating = false
         }
