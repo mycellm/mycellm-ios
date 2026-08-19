@@ -396,7 +396,7 @@ actor BootstrapClient {
         temperature: Double = 0.7,
         maxTokens: Int = 2048,
         chunkTimeout: TimeInterval = 20
-    ) async throws -> AsyncThrowingStream<String, Error> {
+    ) async throws -> AsyncThrowingStream<StreamEvent, Error> {
         guard let qt = quicTransport, await qt.isConnected else {
             throw MycellmError.transportError("Not connected via QUIC")
         }
@@ -431,9 +431,18 @@ actor BootstrapClient {
                     for try await chunk in quicStream {
                         guard !Task.isCancelled else { break }
                         lastChunk.touch()
+                        // Attribution rides on the first frame — surface it
+                        // immediately so the UI can name the node answering
+                        // while the answer is still arriving, rather than at
+                        // the end when it is no longer interesting.
+                        let servedBy = chunk.payload["served_by"]?.stringValue
+                        let model = chunk.payload["model"]?.stringValue
                         let text = chunk.payload["text"]?.stringValue ?? ""
+                        if servedBy != nil || model != nil {
+                            continuation.yield(StreamEvent(text: "", servedBy: servedBy, model: model))
+                        }
                         if !text.isEmpty {
-                            continuation.yield(text)
+                            continuation.yield(StreamEvent(text: text))
                         }
                     }
                     continuation.finish()
@@ -470,6 +479,14 @@ actor BootstrapClient {
         lastError = error
         onStateChange?(newState, transport, error)
     }
+}
+
+/// One piece of a streamed reply: text, or the attribution that arrives with
+/// the first frame.
+struct StreamEvent: Sendable {
+    var text: String = ""
+    var servedBy: String?
+    var model: String?
 }
 
 // MARK: - Idle tracking

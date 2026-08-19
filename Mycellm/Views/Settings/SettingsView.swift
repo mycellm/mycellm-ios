@@ -110,6 +110,11 @@ struct SettingsView: View {
 
     private var chatSection: some View {
         Section(header: Text("Chat"), footer: Text("When Show Reasoning is off (default), thinking-model output is stripped at the server so the chat only shows the answer. Turn on to see the model's step-by-step reasoning in a collapsible panel above each response.").font(.mono(10))) {
+            Toggle("Render Markdown", isOn: Binding(
+                get: { preferences.chatRenderMarkdown },
+                set: { preferences.chatRenderMarkdown = $0 }
+            ))
+            .font(.mono(13))
             Toggle("Show Reasoning", isOn: Binding(
                 get: { preferences.chatShowReasoning },
                 set: { preferences.chatShowReasoning = $0 }

@@ -39,7 +39,7 @@ enum AppIconOption: String, CaseIterable, Identifiable {
         case .orange: "Orange"
         case .yellow: "Yellow"
         case .green: "Green"
-        case .lightBlue: "Light Blue"
+        case .lightBlue: "Blue"
         case .purple: "Purple"
         }
     }

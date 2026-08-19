@@ -1015,6 +1015,17 @@ struct ChatView: View {
                 Task { @MainActor in
                     mutate(responseId) { $0.content += fragment }
                 }
+            } onAttribution: { servedBy, servedModel in
+                // Applied the moment the first frame lands, not at the end:
+                // "which node is answering" is information you want WHILE you
+                // wait, and it used to read "default" because the request's
+                // placeholder model name was all the UI ever had.
+                Task { @MainActor in
+                    mutate(responseId) { msg in
+                        if let servedBy, !servedBy.isEmpty { msg.sourceNode = servedBy }
+                        if let servedModel, !servedModel.isEmpty { msg.modelUsed = servedModel }
+                    }
+                }
             }
 
             await MainActor.run {
@@ -1030,7 +1041,15 @@ struct ChatView: View {
                     msg.tokenCount = outcome.chunks
                     let elapsed = Date().timeIntervalSince(msg.startTime)
                     msg.tokensPerSecond = elapsed > 0 ? Double(outcome.chunks) / elapsed : 0
-                    msg.modelUsed = model
+                    // Prefer what the server reported over what we asked for.
+                    // Asking for "default" and then labelling the reply
+                    // "default" tells the user nothing they did not type.
+                    if let served = outcome.servedModel, !served.isEmpty {
+                        msg.modelUsed = served
+                    } else if msg.modelUsed.isEmpty {
+                        msg.modelUsed = model
+                    }
+                    if let node = outcome.servedBy, !node.isEmpty { msg.sourceNode = node }
                     msg.routedVia = outcome.routedVia
                     msg.isStreaming = false
                     msg.endTime = Date()
@@ -1391,10 +1410,9 @@ struct MessageBubble: View {
                 .foregroundStyle(Color.consoleText)
                 .textSelection(.enabled)
         } else {
-            Text(LocalizedStringKey(message.content))
-                .font(.system(size: 16))
-                .foregroundStyle(Color.consoleText)
-                .textSelection(.enabled)
+            MarkdownMessage(source: message.content,
+                            rendered: Preferences.shared.chatRenderMarkdown,
+                            streaming: message.isStreaming)
                 .tint(Color.relayBlue)
         }
     }

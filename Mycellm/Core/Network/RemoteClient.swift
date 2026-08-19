@@ -31,6 +31,10 @@ actor RemoteClient {
     struct StreamChunk: Sendable {
         let content: String
         let reasoning: String
+        /// Which node served this, when the server says so. Defaulted so the
+        /// existing call sites that only build content keep compiling.
+        var servedBy: String? = nil
+        var model: String? = nil
     }
 
     /// Non-streaming response carrying both the user-facing answer and any
@@ -120,8 +124,16 @@ actor RemoteClient {
                         // alongside / interleaved with delta.content.
                         let content = (delta["content"] as? String) ?? ""
                         let reasoning = (delta["reasoning_content"] as? String) ?? ""
-                        if !content.isEmpty || !reasoning.isEmpty {
-                            continuation.yield(StreamChunk(content: content, reasoning: reasoning))
+                        // The gateway stamps every SSE chunk with which node
+                        // served it; passing it through means the HTTP path can
+                        // attribute a reply the same way the QUIC path does.
+                        let meta = json["mycellm"] as? [String: Any]
+                        let node = meta?["node"] as? String
+                        let servedModel = json["model"] as? String
+                        if !content.isEmpty || !reasoning.isEmpty || node != nil {
+                            continuation.yield(StreamChunk(
+                                content: content, reasoning: reasoning,
+                                servedBy: node, model: servedModel))
                         }
                     }
                     continuation.finish()

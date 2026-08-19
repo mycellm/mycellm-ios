@@ -116,6 +116,8 @@ actor HTTPServer {
                 "total_ms": outcome.totalMs,
                 "error": outcome.error as Any,
                 "quic_error": outcome.quicError as Any,
+                "served_by": outcome.servedBy as Any,
+                "served_model": outcome.servedModel as Any,
             ])
         }
 

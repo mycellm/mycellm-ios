@@ -26,6 +26,11 @@ actor NetworkChatEngine {
         var firstChunkMs: Int?
         var totalMs: Int = 0
         var error: String?
+        /// The node that actually produced the answer, and the model it used.
+        /// Arrives on the first frame, not at the end — "which node served
+        /// this" stops being interesting once the reply is complete.
+        var servedBy: String?
+        var servedModel: String?
         /// Why the QUIC attempt gave up, when it did. Without this a fallback
         /// to HTTP is indistinguishable from QUIC never having been tried —
         /// which cost a whole diagnostic round.
@@ -57,7 +62,8 @@ actor NetworkChatEngine {
         model: String,
         transport: Transport,
         showReasoning: Bool = false,
-        onChunk: @Sendable @escaping (String) -> Void
+        onChunk: @Sendable @escaping (String) -> Void,
+        onAttribution: (@Sendable (String?, String?) -> Void)? = nil
     ) async -> Outcome {
         let started = Date()
         var out = Outcome()
@@ -77,9 +83,14 @@ actor NetworkChatEngine {
                 let raw = messages.map { ["role": $0.role, "content": $0.content] }
                 let stream = try await bootstrap.streamInferenceWithTimeout(
                     model: model, messages: raw)
-                for try await text in stream {
+                for try await event in stream {
                     if Task.isCancelled { break }
-                    note(text)
+                    if event.servedBy != nil || event.model != nil {
+                        out.servedBy = event.servedBy ?? out.servedBy
+                        out.servedModel = event.model ?? out.servedModel
+                        onAttribution?(out.servedBy, out.servedModel)
+                    }
+                    note(event.text)
                 }
                 out.routedVia = "quic"
             } catch {
@@ -88,7 +99,8 @@ actor NetworkChatEngine {
                 // output would duplicate the reply on screen.
                 if out.chunks == 0 {
                     await httpSend(messages: messages, model: model,
-                                   showReasoning: showReasoning, out: &out, note: note)
+                                   showReasoning: showReasoning, out: &out, note: note,
+                                   onAttribution: onAttribution)
                 } else {
                     out.error = "\(error)"
                     out.routedVia = "quic"
@@ -97,7 +109,8 @@ actor NetworkChatEngine {
         } else {
             if transport == .quic { out.quicError = "no bootstrap client" }
             await httpSend(messages: messages, model: model,
-                           showReasoning: showReasoning, out: &out, note: note)
+                           showReasoning: showReasoning, out: &out, note: note,
+                           onAttribution: onAttribution)
         }
 
         if let firstAt { out.firstChunkMs = Int(firstAt.timeIntervalSince(started) * 1000) }
@@ -111,13 +124,19 @@ actor NetworkChatEngine {
         model: String,
         showReasoning: Bool,
         out: inout Outcome,
-        note: (String) -> Void
+        note: (String) -> Void,
+        onAttribution: (@Sendable (String?, String?) -> Void)? = nil
     ) async {
         do {
             let stream = await remote.stream(
                 model: model, messages: messages, showReasoning: showReasoning)
             for try await chunk in stream {
                 if Task.isCancelled { break }
+                if chunk.servedBy != nil || chunk.model != nil {
+                    out.servedBy = chunk.servedBy ?? out.servedBy
+                    out.servedModel = chunk.model ?? out.servedModel
+                    onAttribution?(out.servedBy, out.servedModel)
+                }
                 note(chunk.content)
                 out.reasoning += chunk.reasoning
             }
@@ -141,6 +160,8 @@ actor NetworkChatEngine {
             out.text = result.content
             out.reasoning = result.reasoningContent ?? ""
             out.chunks = result.content.isEmpty ? 0 : 1
+            out.servedBy = result.sourceNode.isEmpty ? out.servedBy : result.sourceNode
+            out.servedModel = result.model.isEmpty ? out.servedModel : result.model
             out.routedVia = "http-once"
         } catch {
             out.error = "\(error)"
