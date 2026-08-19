@@ -58,7 +58,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.mycellm.app
         MARKETING_VERSION: "1.3.0"
-        CURRENT_PROJECT_VERSION: "47"
+        CURRENT_PROJECT_VERSION: "48"
         CODE_SIGN_ENTITLEMENTS: Mycellm/Mycellm.entitlements
         GENERATE_INFOPLIST_FILE: true
         INFOPLIST_FILE: Mycellm/Info.plist

@@ -930,6 +930,15 @@ struct ChatView: View {
         let history = Array(messages.dropLast())
         let conversationHasImages = history.contains { !$0.images.isEmpty }
 
+        // ⚠️ CAPTURE THE MODEL AT SEND TIME. On-device replies never recorded
+        // which model produced them, and the loaded model changes — swap from
+        // a 3B to a 9B and every past answer in the transcript silently becomes
+        // unattributable. Network replies already carry `served_by`; a local
+        // one has to be stamped here, before the answer starts, because by the
+        // time it finishes the loaded model may already be a different one.
+        let localModel = node.modelManager.chatModels.first?.name
+            ?? node.modelManager.loadedModels.first?.name ?? ""
+
         streamTask = Task {
             do {
                 var tokenCount = 0
@@ -954,11 +963,13 @@ struct ChatView: View {
                     msg.tokenCount = tokenCount
                     msg.endTime = endTime
                     msg.tokensPerSecond = elapsed > 0 ? Double(tokenCount) / elapsed : 0
+                    msg.modelUsed = localModel
                     msg.isStreaming = false
                 }
             } catch {
                 mutate(responseId) { msg in
                     if msg.content.isEmpty { msg.content = "Error: \(error.localizedDescription)" }
+                    msg.modelUsed = localModel
                     msg.endTime = Date()
                     msg.isStreaming = false
                     msg.isError = true
