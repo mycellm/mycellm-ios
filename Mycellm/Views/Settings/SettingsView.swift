@@ -23,6 +23,7 @@ struct SettingsView: View {
                 remoteEndpointSection
                 localAPISection
                 downloadsSection
+                appIconSection
                 displaySection
                 screensaverSection
                 storageSection
@@ -281,6 +282,19 @@ struct SettingsView: View {
                     .font(.mono(10))
                     .foregroundStyle(Color.consoleDim)
             }
+        }
+    }
+
+    // MARK: - App Icon
+
+    private var appIconSection: some View {
+        Section(
+            header: Text("App Icon"),
+            footer: Text("Changes the icon on your home screen. Red is the default.")
+                .font(.mono(10))
+        ) {
+            AppIconPicker()
+                .padding(.vertical, 4)
         }
     }
 
