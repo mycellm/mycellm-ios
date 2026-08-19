@@ -369,11 +369,7 @@ struct ModelsView: View {
             HStack {
                 Text(dl.name).font(.mono(11, weight: .medium))
                     .foregroundStyle(Color.consoleText).lineLimit(1)
-                Text("MLX").font(.mono(8, weight: .medium))
-                    .padding(.horizontal, 4).padding(.vertical, 1)
-                    .background(Color.relayBlue.opacity(0.2))
-                    .foregroundStyle(Color.relayBlue)
-                    .clipShape(RoundedRectangle(cornerRadius: 3))
+                FormatBadge("MLX")
                 Spacer()
                 Button {
                     downloader.cancelRepo(id: dl.id)
@@ -626,6 +622,7 @@ private struct HuggingFaceSheet: View {
                     .foregroundStyle(Color.consoleText)
                     .lineLimit(1)
                 HStack(spacing: 8) {
+                    FormatBadge(isMLX ? "MLX" : "GGUF")
                     Text(repoId).font(.mono(9)).foregroundStyle(Color.consoleDim).lineLimit(1)
                     if downloads > 0 {
                         Text("\(formatCount(downloads)) downloads")
@@ -1018,5 +1015,24 @@ struct EmptyState: View {
         .frame(maxWidth: .infinity).padding(.vertical, 24)
         .background(Color.cardBackground)
         .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+}
+
+/// Format badge — blue for MLX, orange for GGUF. See `Color.format`.
+///
+/// The two used to be blue and green, which collided with the colours meaning
+/// "network" and "on device": a green badge could be asserting either of two
+/// unrelated things, so it asserted nothing.
+struct FormatBadge: View {
+    let label: String
+    init(_ label: String) { self.label = label }
+
+    var body: some View {
+        Text(label)
+            .font(.mono(8, weight: .medium))
+            .padding(.horizontal, 4).padding(.vertical, 1)
+            .background(Color.format(label).opacity(0.2))
+            .foregroundStyle(Color.format(label))
+            .clipShape(RoundedRectangle(cornerRadius: 3))
     }
 }
