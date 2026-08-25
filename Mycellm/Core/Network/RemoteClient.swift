@@ -20,9 +20,21 @@ actor RemoteClient {
         /// OpenAI-o-series style reasoning control. Omitted (nil) lets the
         /// server apply its default policy (MYCELLM_HIDE_REASONING_BY_DEFAULT).
         let reasoning: ReasoningOptions?
+        /// Mycellm routing options. Omitted (nil) entirely when there is
+        /// nothing to say — a 0.7 node ignores unknown fields, but an empty
+        /// object is still a field the node has to reason about, and 0.8
+        /// rejects options it cannot honour rather than accepting them.
+        var mycellm: MycellmOptions?
 
         struct ReasoningOptions: Codable {
             let exclude: Bool
+        }
+
+        struct MycellmOptions: Codable {
+            /// Quality floor. Only ever sent alongside an EMPTY `model` —
+            /// see `ModelSelection`, which makes the alternative
+            /// unrepresentable.
+            let min_tier: String
         }
     }
 
@@ -35,6 +47,9 @@ actor RemoteClient {
         /// existing call sites that only build content keep compiling.
         var servedBy: String? = nil
         var model: String? = nil
+        /// Live swarm phase. Present only on progress frames, which carry an
+        /// empty delta — so a chunk with a phase never also carries content.
+        var progress: SwarmProgress? = nil
     }
 
     /// Non-streaming response carrying both the user-facing answer and any
@@ -72,7 +87,8 @@ actor RemoteClient {
         messages: [ChatMessage],
         temperature: Double = 0.7,
         maxTokens: Int = 2048,
-        showReasoning: Bool = false
+        showReasoning: Bool = false,
+        minTier: String? = nil
     ) -> AsyncThrowingStream<StreamChunk, Error> {
         AsyncThrowingStream { continuation in
             guard let url = endpoint else {
@@ -86,7 +102,8 @@ actor RemoteClient {
                 temperature: temperature,
                 max_tokens: maxTokens,
                 stream: true,
-                reasoning: ChatRequest.ReasoningOptions(exclude: !showReasoning)
+                reasoning: ChatRequest.ReasoningOptions(exclude: !showReasoning),
+                mycellm: minTier.map { ChatRequest.MycellmOptions(min_tier: $0) }
             )
 
             var request = URLRequest(url: url)
@@ -128,6 +145,17 @@ actor RemoteClient {
                         // served it; passing it through means the HTTP path can
                         // attribute a reply the same way the QUIC path does.
                         let meta = json["mycellm"] as? [String: Any]
+
+                        // A swarm progress frame. Yielded on its own because it
+                        // carries an empty delta by contract — folding it into
+                        // the content path would put the execution plan into
+                        // the user's reply.
+                        if let meta, let progress = SwarmProgress(mycellm: meta) {
+                            continuation.yield(StreamChunk(
+                                content: "", reasoning: "", progress: progress))
+                            continue
+                        }
+
                         let node = meta?["node"] as? String
                         let servedModel = json["model"] as? String
                         if !content.isEmpty || !reasoning.isEmpty || node != nil {
@@ -172,7 +200,8 @@ actor RemoteClient {
         messages: [ChatMessage],
         temperature: Double = 0.7,
         maxTokens: Int = 2048,
-        showReasoning: Bool = false
+        showReasoning: Bool = false,
+        minTier: String? = nil
     ) async throws -> ChatResponse {
         guard let url = endpoint else {
             throw MycellmError.transportError("No remote endpoint configured")
@@ -184,7 +213,8 @@ actor RemoteClient {
             temperature: temperature,
             max_tokens: maxTokens,
             stream: false,
-            reasoning: ChatRequest.ReasoningOptions(exclude: !showReasoning)
+            reasoning: ChatRequest.ReasoningOptions(exclude: !showReasoning),
+            mycellm: minTier.map { ChatRequest.MycellmOptions(min_tier: $0) }
         )
 
         var request = URLRequest(url: url)
@@ -250,6 +280,33 @@ actor RemoteClient {
     }
 
     /// Fetch available models from the remote endpoint.
+    /// Models a node advertises, with the tier it derived for each.
+    ///
+    /// Separate from `listModels()` rather than replacing it because the
+    /// tier field is 0.8-only: against a 0.7 node every entry simply has a
+    /// nil tier, and the picker shows the models without tier counts instead
+    /// of showing nothing.
+    func listModelsDetailed() async throws -> [RemoteModel] {
+        guard let base = endpoint?.deletingLastPathComponent().deletingLastPathComponent(),
+              let url = URL(string: base.absoluteString + "/v1/models") else {
+            return []
+        }
+
+        var request = URLRequest(url: url)
+        if !apiKey.isEmpty {
+            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        }
+
+        let (data, _) = try await URLSession.shared.data(for: request)
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let models = json["data"] as? [[String: Any]] else { return [] }
+
+        return models.compactMap { entry in
+            guard let id = entry["id"] as? String, !id.isEmpty else { return nil }
+            return RemoteModel(id: id, tierName: entry["tier"] as? String)
+        }
+    }
+
     func listModels() async throws -> [String] {
         guard let base = endpoint?.deletingLastPathComponent().deletingLastPathComponent(),
               let url = URL(string: base.absoluteString + "/v1/models") else {

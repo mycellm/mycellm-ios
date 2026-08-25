@@ -31,6 +31,10 @@ actor NetworkChatEngine {
         /// this" stops being interesting once the reply is complete.
         var servedBy: String?
         var servedModel: String?
+        /// Swarm phases seen, in order. Recorded as well as reported live so a
+        /// headless test can assert the fan-out happened without racing a UI
+        /// callback — the same reason `chunks` is counted.
+        var phases: [String] = []
         /// Why the QUIC attempt gave up, when it did. Without this a fallback
         /// to HTTP is indistinguishable from QUIC never having been tried —
         /// which cost a whole diagnostic round.
@@ -62,8 +66,17 @@ actor NetworkChatEngine {
         model: String,
         transport: Transport,
         showReasoning: Bool = false,
+        // Quality floor, when the caller asked the node to choose but not
+        // below a tier. Carried only on the HTTP path: the QUIC inference
+        // message has no options field, so a tier request over QUIC would be
+        // silently dropped — see `httpSend`'s call site for why that means
+        // QUIC is skipped rather than the floor being ignored.
+        minTier: String? = nil,
         onChunk: @Sendable @escaping (String) -> Void,
-        onAttribution: (@Sendable (String?, String?) -> Void)? = nil
+        onAttribution: (@Sendable (String?, String?) -> Void)? = nil,
+        // Live swarm phase, when the server sends one. Optional because only a
+        // swarm produces these — a direct chat never calls it.
+        onProgress: (@Sendable (String) -> Void)? = nil
     ) async -> Outcome {
         let started = Date()
         var out = Outcome()
@@ -77,7 +90,17 @@ actor NetworkChatEngine {
             onChunk(text)
         }
 
-        if transport == .quic, let bootstrap {
+        // ⚠️ A TIER FLOOR FORCES THE HTTP PATH. The QUIC inference message
+        // carries model + messages + sampling and nothing else, so sending a
+        // floor over it would drop the constraint and answer from whatever
+        // model the peer felt like — the silent downgrade every other layer of
+        // this release refuses to perform. Slower and correct beats faster and
+        // wrong; when the QUIC envelope grows an options field this condition
+        // goes away.
+        if transport == .quic, minTier != nil {
+            out.quicError = "tier floor requires the HTTP path"
+        }
+        if transport == .quic, minTier == nil, let bootstrap {
             out.quicError = nil
             do {
                 let raw = messages.map { ["role": $0.role, "content": $0.content] }
@@ -98,7 +121,7 @@ actor NetworkChatEngine {
                 // Only fall back when nothing was shown. Retrying after partial
                 // output would duplicate the reply on screen.
                 if out.chunks == 0 {
-                    await httpSend(messages: messages, model: model,
+                    await httpSend(messages: messages, model: model, minTier: minTier,
                                    showReasoning: showReasoning, out: &out, note: note,
                                    onAttribution: onAttribution)
                 } else {
@@ -107,10 +130,10 @@ actor NetworkChatEngine {
                 }
             }
         } else {
-            if transport == .quic { out.quicError = "no bootstrap client" }
-            await httpSend(messages: messages, model: model,
+            if transport == .quic && out.quicError == nil { out.quicError = "no bootstrap client" }
+            await httpSend(messages: messages, model: model, minTier: minTier,
                            showReasoning: showReasoning, out: &out, note: note,
-                           onAttribution: onAttribution)
+                           onAttribution: onAttribution, onProgress: onProgress)
         }
 
         if let firstAt { out.firstChunkMs = Int(firstAt.timeIntervalSince(started) * 1000) }
@@ -122,16 +145,24 @@ actor NetworkChatEngine {
     private func httpSend(
         messages: [RemoteClient.ChatMessage],
         model: String,
+        minTier: String? = nil,
         showReasoning: Bool,
         out: inout Outcome,
         note: (String) -> Void,
-        onAttribution: (@Sendable (String?, String?) -> Void)? = nil
+        onAttribution: (@Sendable (String?, String?) -> Void)? = nil,
+        onProgress: (@Sendable (String) -> Void)? = nil
     ) async {
         do {
             let stream = await remote.stream(
-                model: model, messages: messages, showReasoning: showReasoning)
+                model: model, messages: messages, showReasoning: showReasoning,
+                minTier: minTier)
             for try await chunk in stream {
                 if Task.isCancelled { break }
+                if let progress = chunk.progress {
+                    out.phases.append(progress.label)
+                    onProgress?(progress.label)
+                    continue
+                }
                 if chunk.servedBy != nil || chunk.model != nil {
                     out.servedBy = chunk.servedBy ?? out.servedBy
                     out.servedModel = chunk.model ?? out.servedModel
@@ -156,7 +187,8 @@ actor NetworkChatEngine {
         // like a clean empty stream, so try once the ordinary way.
         do {
             let result = try await remote.completeWithMetadata(
-                model: model, messages: messages, showReasoning: showReasoning)
+                model: model, messages: messages, showReasoning: showReasoning,
+                minTier: minTier)
             out.text = result.content
             out.reasoning = result.reasoningContent ?? ""
             out.chunks = result.content.isEmpty ? 0 : 1

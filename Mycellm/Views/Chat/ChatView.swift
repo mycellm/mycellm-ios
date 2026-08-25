@@ -42,6 +42,11 @@ struct ChatView: View {
     // Session management
     @State private var currentSession: ChatSession?
     @State private var showSessionList = false
+    /// Queue sheet. Shown from the header, and offered inline when a
+    /// network chat cannot be served right now — "come back later" is a
+    /// better answer than an error, and it is the one the fleet can keep.
+    @State private var showQueue = false
+    @State private var queuePrefill = ""
     @State private var isPrivateSession = false
     @Query(sort: \ChatSession.updatedAt, order: .reverse) private var sessions: [ChatSession]
 
@@ -59,6 +64,11 @@ struct ChatView: View {
         var modelUsed: String = ""
         let timestamp: Date
         var isStreaming: Bool = false
+        /// Live swarm phase — "Asking 3 models on aurora, hokulea…". Present
+        /// only while a swarm is fanning out; cleared by the first real token,
+        /// because once the answer is arriving the phase is no longer what the
+        /// user is waiting on.
+        var phase: String = ""
         var isError: Bool = false
         var startTime: Date = Date()
         var endTime: Date?
@@ -179,6 +189,12 @@ struct ChatView: View {
             .onAppear {
                 configureRemoteClient()
                 loadOrCreateSession()
+            }
+            .sheet(isPresented: $showQueue) {
+                QueueView(
+                    selection: ModelSelection(stored: Preferences.shared.remoteModel),
+                    initialPrompt: queuePrefill
+                )
             }
             .sheet(isPresented: $showSessionList) {
                 SessionListView(
@@ -429,6 +445,20 @@ struct ChatView: View {
                             .foregroundStyle(Color.poisonPurple.opacity(0.8))
                     }
 
+                    // Network only: the queue lives on the node, so there is
+                    // nothing to show while chatting on-device.
+                    if route == .network {
+                        Button {
+                            queuePrefill = ""
+                            showQueue = true
+                        } label: {
+                            Image(systemName: "clock.arrow.circlepath")
+                                .font(.system(size: 16))
+                                .foregroundStyle(Color.consoleDim)
+                        }
+                        .buttonStyle(.plain)
+                    }
+
                     Button { exportCurrentSession() } label: {
                         Image(systemName: "square.and.arrow.up")
                             .font(.system(size: 16))
@@ -461,6 +491,13 @@ struct ChatView: View {
                 }
 
                 Spacer()
+
+                // Network only: the picker chooses which remote model answers.
+                // On-device chats are served by whatever is loaded, so there is
+                // nothing here to choose between.
+                if route == .network {
+                    ChatModelMenu(preferences: Preferences.shared)
+                }
 
                 Button { showEndpointDetail.toggle() } label: {
                     statusDot
@@ -649,8 +686,12 @@ struct ChatView: View {
         switch route {
         case .network:
             if !networkReachable { return isOnline ? "Unavailable" : "Offline" }
-            let model = Preferences.shared.remoteModel
-            return model.isEmpty ? "Connected" : model
+            // Rendered through ModelSelection so a stored tier reads
+            // "Capable (13B+)" and not the raw "tier:capable" wire value.
+            let selection = ModelSelection(stored: Preferences.shared.remoteModel)
+            if case .auto = selection { return "Connected" }
+            let label = selection.label
+            return label.count > 20 ? String(label.prefix(18)) + "…" : label
         case .onDevice:
             if let first = node.modelManager.chatModels.first {
                 let name = first.name
@@ -681,8 +722,11 @@ struct ChatView: View {
             if endpoint.isEmpty && node.connection.bootstrapState != .connected {
                 return "Not connected to a network"
             }
-            let model = Preferences.shared.remoteModel
-            return model.isEmpty ? (endpoint.isEmpty ? "Public network" : endpoint) : model
+            let selection = ModelSelection(stored: Preferences.shared.remoteModel)
+            if case .auto = selection {
+                return endpoint.isEmpty ? "Public network" : endpoint
+            }
+            return selection.label
         case .onDevice:
             if let first = node.modelManager.chatModels.first { return first.name }
             if node.modelManager.hasOnlyEmbeddingModels {
@@ -991,7 +1035,13 @@ struct ChatView: View {
         let chatMessages = messages.dropLast()
             .map { RemoteClient.ChatMessage(role: $0.role, content: $0.content) }
 
-        let model = Preferences.shared.remoteModel.isEmpty ? "default" : Preferences.shared.remoteModel
+        // One stored string decodes to model OR tier, never both — see
+        // `ModelSelection`. "default" is kept as the wire value for Automatic
+        // because that is what previous releases sent and the node still
+        // resolves it.
+        let selection = ModelSelection(stored: Preferences.shared.remoteModel)
+        let model = selection.wireModel.isEmpty ? "default" : selection.wireModel
+        let minTier = selection.wireMinTier
 
         // Try QUIC streaming first (token-by-token), fall back to HTTP
         let useQUICStream = node.connection.bootstrapState == .connected && node.connection.bootstrapTransport == .quic
@@ -1021,10 +1071,14 @@ struct ChatView: View {
                 messages: Array(chatMessages),
                 model: model,
                 transport: useQUICStream ? .quic : .http,
-                showReasoning: Preferences.shared.chatShowReasoning
+                showReasoning: Preferences.shared.chatShowReasoning,
+                minTier: minTier
             ) { fragment in
                 Task { @MainActor in
-                    mutate(responseId) { $0.content += fragment }
+                    mutate(responseId) {
+                        $0.content += fragment
+                        $0.phase = ""
+                    }
                 }
             } onAttribution: { servedBy, servedModel in
                 // Applied the moment the first frame lands, not at the end:
@@ -1036,6 +1090,10 @@ struct ChatView: View {
                         if let servedBy, !servedBy.isEmpty { msg.sourceNode = servedBy }
                         if let servedModel, !servedModel.isEmpty { msg.modelUsed = servedModel }
                     }
+                }
+            } onProgress: { label in
+                Task { @MainActor in
+                    mutate(responseId) { if $0.content.isEmpty { $0.phase = label } }
                 }
             }
 
@@ -1049,6 +1107,7 @@ struct ChatView: View {
                         msg.content = "Error: \(err)"
                         msg.isError = true
                     }
+                    msg.phase = ""
                     msg.tokenCount = outcome.chunks
                     let elapsed = Date().timeIntervalSince(msg.startTime)
                     msg.tokensPerSecond = elapsed > 0 ? Double(outcome.chunks) / elapsed : 0
@@ -1414,7 +1473,23 @@ struct MessageBubble: View {
     @ViewBuilder
     private var messageText: some View {
         if isThinking {
-            ThinkingIndicator()
+            // A swarm spends its first seconds fanning out. Saying WHICH models
+            // on WHICH nodes is the only moment the fabric is visible to a
+            // user — an undifferentiated dot animation for 15 seconds looks
+            // identical to a hang, which is the mistake this release keeps
+            // finding and removing.
+            if !message.phase.isEmpty {
+                HStack(spacing: 6) {
+                    ThinkingIndicator()
+                    Text(message.phase)
+                        .font(.mono(10))
+                        .foregroundStyle(Color.ledgerGold)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            } else {
+                ThinkingIndicator()
+            }
         } else if isUser {
             Text(message.content)
                 .font(.mono(13))

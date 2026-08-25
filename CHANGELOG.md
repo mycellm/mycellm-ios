@@ -9,7 +9,7 @@ version of the Python [mycellm](https://github.com/mycellm/mycellm) core whose
 protocol and API surface this build matches. A release can bump one without the
 other.
 
-## [1.3.0] — unreleased · build 32 · core parity 0.8.0
+## [1.3.0] — unreleased · build 50 · core parity 0.8.0
 
 **This node now tells the fleet what it is actually able to do.** 0.8 adds an
 execution fabric on the Python side that plans a job across several models
@@ -48,6 +48,37 @@ and this node was under-reporting on two counts that both had consequences.
 - **Serving-group and parallelism fields decode from peers** — `deployment_id`,
   `serving_group_id`, `parallelism` — so a peer fronting an external cluster is
   represented here as what it is rather than as an ordinary model.
+
+- **A model / quality picker, in the chat bar.** Choosing a model used to be a
+  free-text field in Settings that expected you to know a model's exact name —
+  so in practice nobody set it and every network chat went out as `default`.
+  There is now a picker where you are actually chatting: **Automatic** (still
+  the default), a **quality floor** with live counts of what each tier reaches,
+  or one named model. A tier nothing currently meets is listed as "none
+  available" rather than hidden — the point of a floor is to say what you want
+  even when nothing meets it, and hiding it would quietly downgrade the request
+  to whatever happened to be awake. The same picker is in Settings, reading one
+  shared catalogue so the two can never disagree.
+
+  A tier floor forces the HTTP path: the QUIC inference message carries model,
+  messages and sampling and nothing else, so sending a floor over it would drop
+  the constraint and answer from whatever model the peer felt like. Slower and
+  correct beats faster and wrong.
+
+- **The job queue, from your phone.** Submit work to a node and let it run when
+  a device is free and fit — an iPad on the charger tonight, a Mac that wakes in
+  the morning. Nothing is lost if the app closes. Each queued job shows why it
+  is waiting in the node's own words, and finished jobs show which node and
+  model actually answered — a job may run hours later on a different machine
+  than the one that would have taken it at submit time.
+
+- **Swarm progress while you wait.** A swarm spends its first seconds fanning
+  out; the typing indicator now says what is happening — "Asking 3 models on
+  aurora, hokulea…", then "Synthesising 3 answers…". Fifteen seconds of an
+  undifferentiated dot animation looks identical to a hang.
+
+- **Token counts from relayed and multimodal models.** Fixed on the node side
+  in 0.8.0; this build surfaces them.
 
 ### Compatibility
 

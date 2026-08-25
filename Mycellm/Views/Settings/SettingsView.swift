@@ -187,20 +187,12 @@ struct SettingsView: View {
                     set: { preferences.remoteApiKey = $0 }
                 ))
             }
-            HStack {
-                Text("Model")
-                    .font(.mono(13))
-                    .foregroundStyle(Color.consoleDim)
-                TextField("auto", text: Binding(
-                    get: { preferences.remoteModel },
-                    set: { preferences.remoteModel = $0 }
-                ))
-                .font(.mono(12))
-                .foregroundStyle(Color.consoleText)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .multilineTextAlignment(.trailing)
-            }
+            // ⚠️ NOT A TEXT FIELD ANY MORE. It used to ask for a model's exact
+            // name, which meant in practice nobody set it and every network
+            // chat went out as "default". A picker also makes the tier floor
+            // reachable at all — it has been implemented server-side since 0.8
+            // and had no way in from this app.
+            RemoteModelPicker(preferences: preferences)
         }
     }
 
