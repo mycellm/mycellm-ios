@@ -9,7 +9,7 @@ version of the Python [mycellm](https://github.com/mycellm/mycellm) core whose
 protocol and API surface this build matches. A release can bump one without the
 other.
 
-## [1.3.0] — unreleased · build 50 · core parity 0.8.0
+## [1.3.0] — 2026-08-24 · build 50 · core parity 0.8.0
 
 **This node now tells the fleet what it is actually able to do.** 0.8 adds an
 execution fabric on the Python side that plans a job across several models
