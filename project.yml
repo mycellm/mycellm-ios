@@ -57,12 +57,22 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.mycellm.app
-        MARKETING_VERSION: "1.2.0"
-        CURRENT_PROJECT_VERSION: "31"
+        MARKETING_VERSION: "1.3.0"
+        CURRENT_PROJECT_VERSION: "50"
         CODE_SIGN_ENTITLEMENTS: Mycellm/Mycellm.entitlements
         GENERATE_INFOPLIST_FILE: true
         INFOPLIST_FILE: Mycellm/Info.plist
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        # Alternate app icons, via the asset catalog rather than loose PNGs:
+        # one source of truth with the primary icon, and actool emits
+        # CFBundleAlternateIcons itself.
+        #
+        # Each alternate is a FULL per-size appiconset. actool also overwrites
+        # any hand-written CFBundleIcons dict in Info.plist, so declaring them
+        # there instead does not survive a build — the catalog is the only
+        # place this can live.
+        ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES: "AppIcon-Orange AppIcon-Yellow AppIcon-Green AppIcon-LightBlue AppIcon-Purple"
+        ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS: true
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: DCMLXQ5H7M

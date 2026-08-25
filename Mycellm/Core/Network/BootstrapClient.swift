@@ -177,6 +177,17 @@ actor BootstrapClient {
             fromPeer: peerId
         )
 
+        // ⚠️ NOTHING USED TO WATCH FOR THE LINK DYING AFTER THIS POINT. The
+        // transport only reported failures during the initial connect, so a
+        // group that died later — a bootstrap restart, a network change — left
+        // the app showing Connected while every send failed with "Failed to
+        // create stream from group". It never recovered on its own; the app had
+        // to be killed. Network chat "working once and then never again" was
+        // this, not the streaming code.
+        await qt.setDisconnectHandler { [weak self] reason in
+            Task { await self?.handleQUICFailure("Link lost: \(reason)") }
+        }
+
         do {
             try await qt.send(envelope)
             // Wait briefly for data to flush over the wire
@@ -385,7 +396,7 @@ actor BootstrapClient {
         temperature: Double = 0.7,
         maxTokens: Int = 2048,
         chunkTimeout: TimeInterval = 20
-    ) async throws -> AsyncThrowingStream<String, Error> {
+    ) async throws -> AsyncThrowingStream<StreamEvent, Error> {
         guard let qt = quicTransport, await qt.isConnected else {
             throw MycellmError.transportError("Not connected via QUIC")
         }
@@ -398,13 +409,40 @@ actor BootstrapClient {
         let quicStream = await qt.requestStream(req)
 
         return AsyncThrowingStream { continuation in
+            // ⚠️ THIS IS AN IDLE TIMEOUT, NOT A DEADLINE — and that distinction
+            // is why network chat never streamed.
+            //
+            // The timer below used to be a single `sleep(chunkTimeout)` that
+            // then cancelled the stream unconditionally. Despite the parameter
+            // being named `chunkTimeout`, it was a hard 20-SECOND CAP ON THE
+            // WHOLE GENERATION: tokens could be arriving perfectly and the
+            // stream still died at 20s with "No response from peer". Any answer
+            // longer than a couple of sentences — which is most of them, and
+            // effectively all of them from a phone or a 35B model — was killed
+            // mid-flow, and ChatView rethrows once a token has arrived, so the
+            // user saw an error instead of a partial answer. Streaming
+            // "not working" was this timer, not the transport.
+            //
+            // Now the clock resets on every chunk, so it fires only when the
+            // peer has genuinely gone quiet.
+            let lastChunk = TimestampBox()
             let task = Task {
                 do {
                     for try await chunk in quicStream {
                         guard !Task.isCancelled else { break }
+                        lastChunk.touch()
+                        // Attribution rides on the first frame — surface it
+                        // immediately so the UI can name the node answering
+                        // while the answer is still arriving, rather than at
+                        // the end when it is no longer interesting.
+                        let servedBy = chunk.payload["served_by"]?.stringValue
+                        let model = chunk.payload["model"]?.stringValue
                         let text = chunk.payload["text"]?.stringValue ?? ""
+                        if servedBy != nil || model != nil {
+                            continuation.yield(StreamEvent(text: "", servedBy: servedBy, model: model))
+                        }
                         if !text.isEmpty {
-                            continuation.yield(text)
+                            continuation.yield(StreamEvent(text: text))
                         }
                     }
                     continuation.finish()
@@ -413,11 +451,17 @@ actor BootstrapClient {
                 }
             }
 
-            // Overall timeout — cancels the stream task
+            // Idle watchdog — fires only after `chunkTimeout` with no chunk.
             let timeout = Task {
-                try? await Task.sleep(for: .seconds(chunkTimeout))
-                task.cancel()
-                continuation.finish(throwing: MycellmError.transportError("No response from peer (\(Int(chunkTimeout))s)"))
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .milliseconds(500))
+                    if Task.isCancelled { return }
+                    guard lastChunk.idleFor() > chunkTimeout else { continue }
+                    task.cancel()
+                    continuation.finish(throwing: MycellmError.transportError(
+                        "No response from peer for \(Int(chunkTimeout))s"))
+                    return
+                }
             }
 
             continuation.onTermination = { _ in
@@ -434,6 +478,34 @@ actor BootstrapClient {
         self.transport = transport
         lastError = error
         onStateChange?(newState, transport, error)
+    }
+}
+
+/// One piece of a streamed reply: text, or the attribution that arrives with
+/// the first frame.
+struct StreamEvent: Sendable {
+    var text: String = ""
+    var servedBy: String?
+    var model: String?
+}
+
+// MARK: - Idle tracking
+
+/// Last-activity timestamp shared between a stream task and its watchdog.
+///
+/// Lock-guarded rather than a bare `var`: the two run on different tasks, and
+/// a torn read here would either kill a healthy stream or let a dead one hang.
+final class TimestampBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var last = Date()
+
+    func touch() {
+        lock.lock(); last = Date(); lock.unlock()
+    }
+
+    func idleFor() -> TimeInterval {
+        lock.lock(); let t = last; lock.unlock()
+        return Date().timeIntervalSince(t)
     }
 }
 

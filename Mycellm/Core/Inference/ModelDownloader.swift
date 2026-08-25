@@ -45,6 +45,9 @@ final class ModelDownloader: NSObject, @unchecked Sendable, URLSessionDownloadDe
         var bytesPerSecond: Int64 = 0
         var state: State = .pending
         var startTime: Date = Date()
+        /// Last (bytes, time) sample, for a CURRENT rate rather than an average.
+        var lastSampleBytes: Int64 = 0
+        var lastSampleAt: Date = Date()
         var task: URLSessionDownloadTask?
 
         enum State: String {
@@ -97,6 +100,9 @@ final class ModelDownloader: NSObject, @unchecked Sendable, URLSessionDownloadDe
         var state: Download.State = .pending
         var error: String?
         var startTime: Date = Date()
+        /// Last (bytes, time) sample, for a CURRENT rate rather than an average.
+        var lastSampleBytes: Int64 = 0
+        var lastSampleAt: Date = Date()
 
         var progressDescription: String {
             let done = ByteCountFormatter.string(fromByteCount: bytesDownloaded, countStyle: .file)
@@ -233,8 +239,14 @@ final class ModelDownloader: NSObject, @unchecked Sendable, URLSessionDownloadDe
         repoDownloads[i].bytesDownloaded = done
         repoDownloads[i].totalBytes = total
         repoDownloads[i].progress = total > 0 ? Double(done) / Double(total) : 0
-        let elapsed = max(1, Date().timeIntervalSince(repoDownloads[i].startTime))
-        repoDownloads[i].bytesPerSecond = Int64(Double(done) / elapsed)
+        let s = Self.sampleRate(
+            previous: repoDownloads[i].bytesPerSecond,
+            lastBytes: repoDownloads[i].lastSampleBytes,
+            lastAt: repoDownloads[i].lastSampleAt,
+            now: done)
+        repoDownloads[i].bytesPerSecond = s.rate
+        repoDownloads[i].lastSampleBytes = s.bytes
+        repoDownloads[i].lastSampleAt = s.at
     }
 
     @MainActor
@@ -332,6 +344,35 @@ final class ModelDownloader: NSObject, @unchecked Sendable, URLSessionDownloadDe
         activeDownloads.removeAll { $0.id == id }
     }
 
+    /// Current transfer rate from successive samples, lightly smoothed.
+    ///
+    /// ⚠️ THE OLD RATE WAS `bytesDownloaded / elapsedSinceStart`, WHICH IS AN
+    /// AVERAGE, NOT A RATE. Three ways that misleads:
+    ///   - it can only crawl toward the true rate, so the figure shown early in
+    ///     a download is always far too low;
+    ///   - it never recovers from a stall — a transfer that pauses and resumes
+    ///     reports a permanently depressed speed, and the ETA inherits it;
+    ///   - on a RESUMED model the byte count starts high while elapsed starts
+    ///     at ~0, so the first sample reports an absurd speed.
+    /// An EMA over deltas tracks the real rate and settles after a stall.
+    /// Returns the new (rate, sampleBytes, sampleAt) — by value, not `inout`.
+    /// `@Observable` turns the arrays into computed properties, and Swift
+    /// refuses two `inout` writebacks into one of those in a single call.
+    static func sampleRate(
+        previous: Int64, lastBytes: Int64, lastAt: Date, now bytes: Int64
+    ) -> (rate: Int64, bytes: Int64, at: Date) {
+        let at = Date()
+        let dt = at.timeIntervalSince(lastAt)
+        // Too short a window makes the figure jump around; wait for a real one.
+        guard dt >= 0.5 else { return (previous, lastBytes, lastAt) }
+        let delta = bytes - lastBytes
+        // A resumed or restarted transfer can move the counter backwards.
+        guard delta > 0 else { return (previous, bytes, at) }
+        let instant = Double(delta) / dt
+        let smoothed = previous > 0 ? 0.7 * Double(previous) + 0.3 * instant : instant
+        return (Int64(smoothed), bytes, at)
+    }
+
     // MARK: - URLSessionDownloadDelegate (runs on background delegateQueue)
 
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64, totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
@@ -343,8 +384,12 @@ final class ModelDownloader: NSObject, @unchecked Sendable, URLSessionDownloadDe
         guard let dlId = tasks[downloadTask.taskIdentifier],
               let idx = activeDownloads.firstIndex(where: { $0.id == dlId }) else { return }
 
-        let elapsed = max(1, now.timeIntervalSince(activeDownloads[idx].startTime))
-        let speed = Int64(Double(totalBytesWritten) / elapsed)
+        let sample = Self.sampleRate(
+            previous: activeDownloads[idx].bytesPerSecond,
+            lastBytes: activeDownloads[idx].lastSampleBytes,
+            lastAt: activeDownloads[idx].lastSampleAt,
+            now: totalBytesWritten)
+        let speed = sample.rate
 
         DispatchQueue.main.async { [self] in
             guard let idx = activeDownloads.firstIndex(where: { $0.id == dlId }) else { return }
@@ -354,6 +399,8 @@ final class ModelDownloader: NSObject, @unchecked Sendable, URLSessionDownloadDe
                 ? Double(totalBytesWritten) / Double(totalBytesExpectedToWrite)
                 : 0
             activeDownloads[idx].bytesPerSecond = speed
+            activeDownloads[idx].lastSampleBytes = sample.bytes
+            activeDownloads[idx].lastSampleAt = sample.at
         }
     }
 

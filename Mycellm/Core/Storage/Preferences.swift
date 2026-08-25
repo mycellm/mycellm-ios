@@ -280,6 +280,21 @@ final class Preferences: @unchecked Sendable {
     /// collapsible disclosure panel above the answer. Doesn't change
     /// server policy — sends `reasoning: {"exclude": false}` in the
     /// request body so the server emits reasoning_content.
+    /// Render assistant replies as Markdown, or show the raw source.
+    /// Defaults to rendered — models answer in Markdown, so source is the
+    /// deliberate choice, not the fallback.
+    var chatRenderMarkdown: Bool {
+        get {
+            access(keyPath: \.chatRenderMarkdown)
+            return defaults.object(forKey: "chat_render_markdown") as? Bool ?? true
+        }
+        set {
+            withMutation(keyPath: \.chatRenderMarkdown) {
+                defaults.set(newValue, forKey: "chat_render_markdown")
+            }
+        }
+    }
+
     var chatShowReasoning: Bool {
         get {
             access(keyPath: \.chatShowReasoning)

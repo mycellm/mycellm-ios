@@ -44,9 +44,19 @@ import CoreImage
 /// The two protocols are near-identical (same model of encode/decode/
 /// convert/special-tokens) but live in different modules. MLXLMCommon's
 /// `decode` uses argument label `tokenIds` where swift-transformers uses
-/// `tokens`; applyChatTemplate has incompatible Message/ToolSpec types
-/// — we render manually with ChatML to avoid the type-translation surface,
-/// which works for Qwen3 / Llama-3 / Mistral / most on-device families.
+/// `tokens`.
+///
+/// ⚠️ `applyChatTemplate` USED TO RENDER CHATML BY HAND HERE, justified by a
+/// claim that the Message/ToolSpec types were incompatible. They are not:
+/// swift-transformers declares `Message = [String: any Sendable]`, which is
+/// exactly what MLXLMCommon passes. There was never any glue to write.
+///
+/// The cost of that mistake was silent and total. ChatML is right for Qwen2.5,
+/// Llama-3 and Mistral, so most models kept working — but a family with its own
+/// template got a prompt it did not recognise. Qwen3.5 on an iPhone answered
+/// with an unterminated <think> block that the reasoning splitter then stripped,
+/// so a correct model returned an EMPTY string after burning the whole token
+/// budget. Nothing errored; there was simply no answer.
 ///
 /// @unchecked Sendable because the upstream protocol isn't marked
 /// Sendable but the underlying AutoTokenizer-returned instance is
@@ -70,16 +80,31 @@ private struct MLXTokenizerAdapter: MLXLMCommon.Tokenizer, @unchecked Sendable {
     var eosToken: String? { upstream.eosToken }
     var unknownToken: String? { upstream.unknownToken }
 
-    /// Render messages with ChatML manually, then tokenize. We deliberately
-    /// don't forward to upstream.applyChatTemplate because its Message /
-    /// ToolSpec types are incompatible with MLXLMCommon's dict-based shape
-    /// — translating would require a lot of glue for marginal benefit when
-    /// most on-device models accept ChatML.
+    /// Use the MODEL'S OWN chat template, falling back to ChatML only when the
+    /// tokenizer ships none.
+    ///
+    /// The fallback is not a safety net for template bugs — if a model has a
+    /// template and it fails, that is a real error and should surface rather
+    /// than be papered over with a prompt the model does not speak. It exists
+    /// for the genuinely template-less case (a base model, a stripped repo),
+    /// where ChatML is a better guess than nothing.
     func applyChatTemplate(
         messages: [[String: any Sendable]],
         tools: [[String: any Sendable]]?,
         additionalContext: [String: any Sendable]?
     ) throws -> [Int] {
+        do {
+            return try upstream.applyChatTemplate(
+                messages: messages, tools: tools, additionalContext: additionalContext)
+        } catch {
+            return upstream.encode(
+                text: MLXTokenizerAdapter.chatMLPrompt(messages), addSpecialTokens: false)
+        }
+    }
+
+    /// ChatML rendering, kept in one place so the fallback here and the one in
+    /// `MLXBackend` cannot drift apart.
+    static func chatMLPrompt(_ messages: [[String: any Sendable]]) -> String {
         var prompt = ""
         for msg in messages {
             let role = (msg["role"] as? String) ?? "user"
@@ -87,7 +112,7 @@ private struct MLXTokenizerAdapter: MLXLMCommon.Tokenizer, @unchecked Sendable {
             prompt += "<|im_start|>\(role)\n\(content)<|im_end|>\n"
         }
         prompt += "<|im_start|>assistant\n"
-        return upstream.encode(text: prompt, addSpecialTokens: false)
+        return prompt
     }
 }
 
@@ -243,7 +268,8 @@ actor MLXBackend: InferenceBackend {
         }
 
         let augmented = injectToolsIntoSystem(messages, tools: tools)
-        let prompt = formatMessages(augmented)
+        let chat = Self.asChatMessages(augmented)
+        let tmplContext = Self.templateContext(for: loadedModel ?? "")
         let parameters = Self.makeParameters(maxTokens: maxTokens, temperature: temperature)
         let startTime = Date()
 
@@ -254,8 +280,9 @@ actor MLXBackend: InferenceBackend {
         let store = kvStore
         let modelNameSnap = loadedModel ?? ""
         let (rawText, promptTokens, completionTokens) = try await container.perform { context in
-            // ChatML prompt -> token ids (matches MLXTokenizerAdapter's encoding).
-            let fullTokens = context.tokenizer.encode(text: prompt, addSpecialTokens: false)
+            // The MODEL'S OWN template -> token ids. See `promptTokens`.
+            let fullTokens = Self.promptTokens(
+                context.tokenizer, messages: chat, additionalContext: tmplContext)
             let resolved = try reuseEnabled
                 ? Self.resolveCachedInput(context: context, fullTokens: fullTokens,
                                           parameters: parameters, store: store, modelName: modelNameSnap)
@@ -319,7 +346,8 @@ actor MLXBackend: InferenceBackend {
                         throw MycellmError.modelNotLoaded("No MLX model loaded")
                     }
                     let augmented = self.injectToolsIntoSystem(messages, tools: tools)
-                    let prompt = self.formatMessages(augmented)
+                    let chat = Self.asChatMessages(augmented)
+                    let tmplContext = Self.templateContext(for: self.loadedModel ?? "")
                     let parameters = Self.makeParameters(maxTokens: maxTokens, temperature: temperature)
                     let startTime = Date()
 
@@ -330,7 +358,8 @@ actor MLXBackend: InferenceBackend {
                     let store = self.kvStore
                     let modelNameSnap = self.loadedModel ?? ""
                     let count: Int = try await container.perform { context in
-                        let fullTokens = context.tokenizer.encode(text: prompt, addSpecialTokens: false)
+                        let fullTokens = Self.promptTokens(
+                            context.tokenizer, messages: chat, additionalContext: tmplContext)
                         let resolved = try reuseEnabled
                             ? Self.resolveCachedInput(context: context, fullTokens: fullTokens,
                                                       parameters: parameters, store: store, modelName: modelNameSnap)
@@ -665,19 +694,63 @@ actor MLXBackend: InferenceBackend {
         return result
     }
 
-    /// Render messages into a ChatML prompt. MLX's UserInput accepts a
-    /// raw prompt string — we format manually because most on-device
-    /// models accept ChatML and we'd otherwise need to invoke the
-    /// model's own chat template via the tokenizer (extra surface).
-    private func formatMessages(_ messages: [[String: String]]) -> String {
-        var prompt = ""
-        for msg in messages {
-            let role = msg["role"] ?? "user"
-            let content = msg["content"] ?? ""
-            prompt += "<|im_start|>\(role)\n\(content)<|im_end|>\n"
+    /// Widen `[String: String]` messages to the tokenizer's message type.
+    /// Same data — the protocols just disagree about the value type.
+    static func asChatMessages(_ messages: [[String: String]]) -> [[String: any Sendable]] {
+        messages.map { $0.mapValues { $0 as any Sendable } }
+    }
+
+    /// Prompt token ids, built with the MODEL'S OWN chat template.
+    ///
+    /// ⚠️ THIS PATH USED TO RENDER CHATML AND ENCODE IT DIRECTLY, never asking
+    /// the tokenizer. That is correct for Qwen2.5 / Llama-3 / Mistral, whose
+    /// templates *are* ChatML, and silently wrong for anything else: the model
+    /// receives a prompt in a format it was not trained on and produces output
+    /// that looks like a generation failure rather than a prompt-format bug.
+    /// Qwen3.5 on an iPhone returned an empty answer this way — every token of
+    /// a 400-token budget spent inside a <think> block that never closed.
+    ///
+    /// Templates are per-model data that ships in `tokenizer_config.json`, so
+    /// hardcoding one format means every new model family is a coin flip.
+    static func promptTokens(
+        _ tokenizer: any MLXLMCommon.Tokenizer,
+        messages: [[String: any Sendable]],
+        additionalContext: [String: any Sendable]? = nil
+    ) -> [Int] {
+        // The adapter already falls back to ChatML for a template-less
+        // tokenizer; this guards the case where `context.tokenizer` is some
+        // other implementation that throws instead.
+        if let tokens = try? tokenizer.applyChatTemplate(
+            messages: messages, tools: nil, additionalContext: additionalContext
+        ), !tokens.isEmpty {
+            return tokens
         }
-        prompt += "<|im_start|>assistant\n"
-        return prompt
+        return tokenizer.encode(
+            text: MLXTokenizerAdapter.chatMLPrompt(messages), addSpecialTokens: false)
+    }
+
+    /// Template kwargs for a model, from its reasoning dialect.
+    ///
+    /// ⚠️ `ReasoningDialects.Dialect.templateKwargSuppress` HAD NO CONSUMER.
+    /// The Qwen3 entry has declared `enable_thinking = false` all along and
+    /// nothing ever passed it to a chat template, so a hybrid-thinking model on
+    /// this device always ran with thinking ON.
+    ///
+    /// That is not cosmetic on a phone. Qwen3.5-4B answering "why is the sky
+    /// blue" spent all 300 tokens of its budget writing "Thinking Process: 1.
+    /// Analyze the Request..." and never reached the answer. Worse, this family
+    /// writes its reasoning as plain prose rather than wrapping it in <think>,
+    /// so `splitReasoning` cannot separate it either — the thinking IS the
+    /// reply. Suppressing at the template is the only place it can be stopped.
+    ///
+    /// Follow-up: this applies the dialect's suppression unconditionally. A
+    /// caller asking for reasoning (`reasoning.exclude = false`) should be able
+    /// to turn thinking back on, which needs the flag threaded down to the
+    /// backend — it does not reach here today.
+    static func templateContext(for modelName: String) -> [String: any Sendable]? {
+        guard let suppress = ReasoningDialects.dialectFor(modelName).templateKwargSuppress
+        else { return nil }
+        return [suppress.key: suppress.value]
     }
 
     /// Sum of all file sizes in a directory (for memory-fit check).

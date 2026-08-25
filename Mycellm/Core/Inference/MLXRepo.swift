@@ -291,7 +291,11 @@ enum MLXRepo {
             request.setValue("bytes=\(have)-", forHTTPHeaderField: "Range")
         }
 
-        let (tmp, response) = try await downloadTask(request, onBytes: { onBytes(have + $0) })
+        // A Range request transfers only the remainder, so that is what the
+        // task's fraction is a fraction OF.
+        let expected = (have > 0 && have < asset.size) ? asset.size - have : asset.size
+        let (tmp, response) = try await downloadTask(
+            request, expectedBytes: expected, onBytes: { onBytes(have + $0) })
         defer { try? FileManager.default.removeItem(at: tmp) }
 
         guard let http = response as? HTTPURLResponse else {
@@ -318,11 +322,28 @@ enum MLXRepo {
         }
     }
 
+    /// Bytes transferred, from a 0…1 fraction and the size we already know.
+    ///
+    /// ⚠️ `URLSessionDownloadTask.progress` IS NOT A BYTE COUNTER. Measured on
+    /// device mid-transfer it reports `completedUnitCount = 5`,
+    /// `totalUnitCount = 100`, `fractionCompleted = 0.795` — an abstract unit
+    /// scale, and one whose counts do not even agree with its own fraction.
+    /// Feeding `completedUnitCount` into a byte total is what pinned the
+    /// progress bar: every callback added the same ~5 to the running figure, so
+    /// the UI sat at the size of the last completed file until the whole model
+    /// finished. Only the fraction is trustworthy, and the manifest already
+    /// tells us how many bytes it is a fraction of.
+    static func bytesFromFraction(_ fraction: Double, expected: Int64) -> Int64 {
+        guard expected > 0, fraction.isFinite, fraction > 0 else { return 0 }
+        return min(Int64(fraction * Double(expected)), expected)
+    }
+
     /// `URLSession.download(for:)` gives no progress, and a download *delegate*
     /// conflicts with the async variant's own file handling — so drive the
     /// completion-handler task and read progress off its `Progress`.
     private static func downloadTask(
-        _ request: URLRequest, onBytes: @escaping @Sendable (Int64) -> Void
+        _ request: URLRequest, expectedBytes: Int64,
+        onBytes: @escaping @Sendable (Int64) -> Void
     ) async throws -> (URL, URLResponse) {
         final class Box: @unchecked Sendable {
             var observation: NSKeyValueObservation?
@@ -351,8 +372,21 @@ enum MLXRepo {
                     }
                 }
                 box.task = task
-                box.observation = task.progress.observe(\.completedUnitCount) { p, _ in
-                    onBytes(p.completedUnitCount)
+                // ⚠️ OBSERVE `fractionCompleted`, NOT `completedUnitCount`.
+                // KVO notifications for `completedUnitCount` on a URLSession
+                // task's Progress do not fire reliably; `fractionCompleted` is
+                // the property Foundation actually publishes. Observing the
+                // wrong one meant the callback never ran DURING a transfer, so
+                // a multi-gigabyte shard reported nothing at all — the byte
+                // count only moved when a whole file finished and `install`
+                // pushed an aggregate. On a model that is one 2.8 GB
+                // safetensors plus a handful of small JSONs, that is a progress
+                // bar pinned near zero for the entire download and then a jump
+                // to 100%. Reading `completedUnitCount` inside the handler is
+                // fine — it is the notification that was unreliable, not the
+                // value.
+                box.observation = task.progress.observe(\.fractionCompleted) { p, _ in
+                    onBytes(Self.bytesFromFraction(p.fractionCompleted, expected: expectedBytes))
                 }
                 task.resume()
             }

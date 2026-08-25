@@ -40,11 +40,17 @@ enum NetworkConfig {
     /// patched build and a vulnerable one report the same version and the
     /// fleet cannot be audited from `/v1/node/status` alone.
     ///
+    /// 0.8.0 = adaptive inference fabric. iOS speaks the additive half: it
+    /// advertises `execution_roles` (so a planner stops routing chat to an
+    /// embedding model instead of learning by refusal) and the device
+    /// constraint telemetry the rest of the fleet had no way to see, and it
+    /// decodes serving-group and parallelism fields from peers. Everything is
+    /// omitted when unset, so a 0.7.x peer receives a byte-identical payload.
     /// 0.7.1 = download destinations contained inside the models directory.
     /// 0.7.0 = leaf-node parity core (node management surface, /v1/embeddings,
     /// Prometheus /metrics, activity + log SSE, URL and MLX-manifest installs
     /// with per-file digest verification) — released fleet-wide 2026-08-15.
     /// Supersedes 0.6.3, the hardening-era core (stop-holdback, download
     /// verification, exact usage, context_length, bounded KV).
-    static let version = "0.7.1"
+    static let version = "0.8.0"
 }

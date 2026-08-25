@@ -2,6 +2,17 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<true/>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_mycellm._tcp</string>
+		<string>_mycellm._udp</string>
+	</array>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>mycellm uses your local network to discover and connect to nearby nodes for P2P inference.</string>
 	<key>UIAppFonts</key>
 	<array>
 		<string>JetBrainsMono-Regular.ttf</string>
@@ -9,6 +20,8 @@
 		<string>JetBrainsMono-SemiBold.ttf</string>
 		<string>JetBrainsMono-Bold.ttf</string>
 	</array>
+	<key>UIFileSharingEnabled</key>
+	<true/>
 	<key>UILaunchScreen</key>
 	<dict>
 		<key>BackgroundColor</key>
@@ -16,40 +29,6 @@
 		<key>ImageName</key>
 		<string>MycellmLogo-red</string>
 	</dict>
-	<key>NSLocalNetworkUsageDescription</key>
-	<string>mycellm uses your local network to discover and connect to nearby nodes for P2P inference.</string>
-	<key>NSBonjourServices</key>
-	<array>
-		<string>_mycellm._tcp</string>
-		<string>_mycellm._udp</string>
-	</array>
-	<!-- ⚠️ THESE TWO TOGETHER, OR NEITHER WORKS AS EXPECTED.
-	     UIFileSharingEnabled publishes Documents/ to Finder and the Files app;
-	     LSSupportsOpeningDocumentsInPlace lets a folder be used where it sits
-	     rather than copied in opaquely. Without the second, dropping an MLX
-	     model DIRECTORY (config.json + .safetensors shards + tokenizer) is
-	     unreliable — iOS is happy to hand over single files and awkward about
-	     folders.
-
-	     WHY AT ALL: MLXBackend shipped in builds 13-15 and ModelManager already
-	     scans Documents/models for MLX directories, but nothing in the app can
-	     PUT one there — the HuggingFace search is hardcoded to `filter=gguf`,
-	     there is no download endpoint, and /v1/node/models/load has branches only
-	     for openai and llama.cpp. So the MLX path is wired at both ends with no
-	     middle, and side-loading is the only way to reach it until the download
-	     work lands.
-
-	     ⚠️ This also exposes every downloaded GGUF to the user's Files app. That
-	     is the intended trade — they are the user's models, several GB each, and
-	     being able to see and delete them without the app is a feature — but it
-	     is a visible change in App Review terms and should be called out in the
-	     next release notes. -->
-	<key>UIFileSharingEnabled</key>
-	<true/>
-	<key>LSSupportsOpeningDocumentsInPlace</key>
-	<true/>
-	<key>ITSAppUsesNonExemptEncryption</key>
-	<false/>
 	<key>UISupportedInterfaceOrientations</key>
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>

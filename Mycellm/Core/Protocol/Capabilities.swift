@@ -40,6 +40,43 @@ struct ModelCapability: Sendable {
     var features: [String] = []
     var throughputTokS: Double = 0.0
 
+    // ── 0.8 Adaptive Inference Fabric (additive, optional) ──────────────
+    //
+    // ⚠️ EVERY ONE OF THESE IS OMITTED FROM `toDict()` WHEN UNSET, AND THAT IS
+    // LOAD-BEARING. A 0.7.1 peer — Python or Swift — parses this map with
+    // per-key lookups, so it ignores keys it does not know, but only as long as
+    // we never *require* one. Emitting `parallelism` on every model would also
+    // inflate every announcement on a network where nothing reads it.
+    //
+    // Mirrors `ModelCapability` in the Python `protocol/capabilities.py`. The
+    // two must agree key-for-key: the wire format is the contract, and a
+    // divergence here shows up as a peer that is silently ineligible for work
+    // rather than as an error anyone sees.
+
+    /// Which deployment serves this model. Empty = served by this peer directly.
+    var deploymentId: String = ""
+    /// The serving group the deployment belongs to (e.g. an oMLX cluster).
+    var servingGroupId: String = ""
+    /// {"type": "standalone"|"tensor"|"pipeline"|"external", "world_size": Int}
+    var parallelism: [String: CBORValue] = [:]
+    /// What this model may be asked to do in a multi-stage job: "direct",
+    /// "proposer", "critic", "synthesizer", "verifier", "embed".
+    /// Empty means "direct only" — 0.7 semantics.
+    var executionRoles: [String] = []
+
+    /// True if this model may be used for `role`.
+    ///
+    /// Mirrors `ModelCapability.can` on the Python side so both ends answer
+    /// identically. Re-deriving this rule at a call site is how the embedding
+    /// bug happened — two places disagreed about what a tag meant.
+    func can(_ role: String) -> Bool {
+        if executionRoles.isEmpty { return role == "direct" }
+        return executionRoles.contains(role)
+    }
+
+    /// True if a serving group serves this, not this peer's own backend.
+    var isGrouped: Bool { !servingGroupId.isEmpty }
+
     func toDict() -> [String: CBORValue] {
         var d: [String: CBORValue] = [
             "name": .string(name),
@@ -54,6 +91,12 @@ struct ModelCapability: Sendable {
         if !visibleNetworks.isEmpty { d["visible_networks"] = .array(visibleNetworks.map { .string($0) }) }
         if !features.isEmpty { d["features"] = .array(features.map { .string($0) }) }
         if throughputTokS > 0 { d["throughput_tok_s"] = .double(throughputTokS) }
+        // 0.8 fields — emitted only when set, so a 0.7 network sees the
+        // byte-identical announcement it saw before.
+        if !deploymentId.isEmpty { d["deployment_id"] = .string(deploymentId) }
+        if !servingGroupId.isEmpty { d["serving_group_id"] = .string(servingGroupId) }
+        if !executionRoles.isEmpty { d["execution_roles"] = .array(executionRoles.map { .string($0) }) }
+        if !parallelism.isEmpty { d["parallelism"] = .map(parallelism) }
         return d
     }
 
@@ -69,7 +112,11 @@ struct ModelCapability: Sendable {
             scope: d["scope"]?.stringValue ?? "home",
             visibleNetworks: d["visible_networks"]?.arrayValue?.compactMap(\.stringValue) ?? [],
             features: d["features"]?.arrayValue?.compactMap(\.stringValue) ?? [],
-            throughputTokS: d["throughput_tok_s"]?.doubleValue ?? 0.0
+            throughputTokS: d["throughput_tok_s"]?.doubleValue ?? 0.0,
+            deploymentId: d["deployment_id"]?.stringValue ?? "",
+            servingGroupId: d["serving_group_id"]?.stringValue ?? "",
+            parallelism: d["parallelism"]?.mapValue ?? [:],
+            executionRoles: d["execution_roles"]?.arrayValue?.compactMap(\.stringValue) ?? []
         )
     }
 }
@@ -80,15 +127,78 @@ struct HardwareCapability: Sendable {
     var vramGb: Double = 0.0
     var backend: String = "cpu"
 
+    // ── 0.8 additive telemetry ──────────────────────────────────────────
+    //
+    // ⚠️ THIS NODE ALREADY KNEW ALL OF THIS AND KEPT IT TO ITSELF. `DeviceState`
+    // computes thermal, power and network conditions for `/v1/node/status`, and
+    // the node already demotes itself to `consumer` when it is in no state to
+    // serve — but a peer could only see that demotion, never the reason, and
+    // never the softer cases where the node still serves while throttled. A
+    // scheduler seeing gpu/vram alone routes to a phone that is at 5% on battery
+    // and thermally limited.
+    //
+    // Nested exactly as Python emits them (`power`/`thermal`/`network` sub-maps),
+    // because the wire format is the contract and a peer reads whichever side it
+    // came from.
+    var ramGb: Double = 0.0
+    var availableMemoryGb: Double = 0.0
+    var architecture: String = ""
+    /// "server" | "desktop" | "laptop" | "mobile"
+    var deviceClass: String = ""
+    /// Power-limited: Low Power Mode, or low battery while discharging.
+    var powerConstrained: Bool = false
+    /// Thermally throttled.
+    var thermalConstrained: Bool = false
+    /// The network costs money (cellular).
+    var networkExpensive: Bool = false
+    /// The user asked the system to go easy (Low Data Mode).
+    var networkConstrained: Bool = false
+
+    /// True when this device should not be handed discretionary work.
+    ///
+    /// Mirrors `HardwareInfo.is_constrained` on the Python side, which in turn
+    /// mirrors the demotion rule this node already applies to itself — so the
+    /// device and any scheduler agree about when it is unfit to serve.
+    var isConstrained: Bool { powerConstrained || thermalConstrained }
+
     func toDict() -> [String: CBORValue] {
-        ["gpu": .string(gpu), "vram_gb": .double(vramGb), "backend": .string(backend)]
+        var d: [String: CBORValue] = [
+            "gpu": .string(gpu),
+            "vram_gb": .double(vramGb),
+            "backend": .string(backend),
+        ]
+        // Absent unless set, so a 0.7 network sees an unchanged payload.
+        if ramGb > 0 { d["ram_gb"] = .double(ramGb) }
+        if availableMemoryGb > 0 { d["available_memory_gb"] = .double(availableMemoryGb) }
+        if !architecture.isEmpty { d["architecture"] = .string(architecture) }
+        if !deviceClass.isEmpty { d["device_class"] = .string(deviceClass) }
+        if powerConstrained { d["power"] = .map(["constrained": .bool(true)]) }
+        if thermalConstrained { d["thermal"] = .map(["constrained": .bool(true)]) }
+        if networkExpensive || networkConstrained {
+            d["network"] = .map([
+                "expensive": .bool(networkExpensive),
+                "constrained": .bool(networkConstrained),
+            ])
+        }
+        return d
     }
 
     static func fromDict(_ d: [String: CBORValue]) -> HardwareCapability {
-        HardwareCapability(
+        let power = d["power"]?.mapValue ?? [:]
+        let thermal = d["thermal"]?.mapValue ?? [:]
+        let network = d["network"]?.mapValue ?? [:]
+        return HardwareCapability(
             gpu: d["gpu"]?.stringValue ?? "none",
             vramGb: d["vram_gb"]?.doubleValue ?? 0.0,
-            backend: d["backend"]?.stringValue ?? "cpu"
+            backend: d["backend"]?.stringValue ?? "cpu",
+            ramGb: d["ram_gb"]?.doubleValue ?? 0.0,
+            availableMemoryGb: d["available_memory_gb"]?.doubleValue ?? 0.0,
+            architecture: d["architecture"]?.stringValue ?? "",
+            deviceClass: d["device_class"]?.stringValue ?? "",
+            powerConstrained: power["constrained"]?.boolValue ?? false,
+            thermalConstrained: thermal["constrained"]?.boolValue ?? false,
+            networkExpensive: network["expensive"]?.boolValue ?? false,
+            networkConstrained: network["constrained"]?.boolValue ?? false
         )
     }
 }

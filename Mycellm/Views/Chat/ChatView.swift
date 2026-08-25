@@ -42,6 +42,11 @@ struct ChatView: View {
     // Session management
     @State private var currentSession: ChatSession?
     @State private var showSessionList = false
+    /// Queue sheet. Shown from the header, and offered inline when a
+    /// network chat cannot be served right now — "come back later" is a
+    /// better answer than an error, and it is the one the fleet can keep.
+    @State private var showQueue = false
+    @State private var queuePrefill = ""
     @State private var isPrivateSession = false
     @Query(sort: \ChatSession.updatedAt, order: .reverse) private var sessions: [ChatSession]
 
@@ -59,6 +64,11 @@ struct ChatView: View {
         var modelUsed: String = ""
         let timestamp: Date
         var isStreaming: Bool = false
+        /// Live swarm phase — "Asking 3 models on aurora, hokulea…". Present
+        /// only while a swarm is fanning out; cleared by the first real token,
+        /// because once the answer is arriving the phase is no longer what the
+        /// user is waiting on.
+        var phase: String = ""
         var isError: Bool = false
         var startTime: Date = Date()
         var endTime: Date?
@@ -179,6 +189,12 @@ struct ChatView: View {
             .onAppear {
                 configureRemoteClient()
                 loadOrCreateSession()
+            }
+            .sheet(isPresented: $showQueue) {
+                QueueView(
+                    selection: ModelSelection(stored: Preferences.shared.remoteModel),
+                    initialPrompt: queuePrefill
+                )
             }
             .sheet(isPresented: $showSessionList) {
                 SessionListView(
@@ -429,6 +445,20 @@ struct ChatView: View {
                             .foregroundStyle(Color.poisonPurple.opacity(0.8))
                     }
 
+                    // Network only: the queue lives on the node, so there is
+                    // nothing to show while chatting on-device.
+                    if route == .network {
+                        Button {
+                            queuePrefill = ""
+                            showQueue = true
+                        } label: {
+                            Image(systemName: "clock.arrow.circlepath")
+                                .font(.system(size: 16))
+                                .foregroundStyle(Color.consoleDim)
+                        }
+                        .buttonStyle(.plain)
+                    }
+
                     Button { exportCurrentSession() } label: {
                         Image(systemName: "square.and.arrow.up")
                             .font(.system(size: 16))
@@ -461,6 +491,13 @@ struct ChatView: View {
                 }
 
                 Spacer()
+
+                // Network only: the picker chooses which remote model answers.
+                // On-device chats are served by whatever is loaded, so there is
+                // nothing here to choose between.
+                if route == .network {
+                    ChatModelMenu(preferences: Preferences.shared)
+                }
 
                 Button { showEndpointDetail.toggle() } label: {
                     statusDot
@@ -649,8 +686,12 @@ struct ChatView: View {
         switch route {
         case .network:
             if !networkReachable { return isOnline ? "Unavailable" : "Offline" }
-            let model = Preferences.shared.remoteModel
-            return model.isEmpty ? "Connected" : model
+            // Rendered through ModelSelection so a stored tier reads
+            // "Capable (13B+)" and not the raw "tier:capable" wire value.
+            let selection = ModelSelection(stored: Preferences.shared.remoteModel)
+            if case .auto = selection { return "Connected" }
+            let label = selection.label
+            return label.count > 20 ? String(label.prefix(18)) + "…" : label
         case .onDevice:
             if let first = node.modelManager.chatModels.first {
                 let name = first.name
@@ -681,8 +722,11 @@ struct ChatView: View {
             if endpoint.isEmpty && node.connection.bootstrapState != .connected {
                 return "Not connected to a network"
             }
-            let model = Preferences.shared.remoteModel
-            return model.isEmpty ? (endpoint.isEmpty ? "Public network" : endpoint) : model
+            let selection = ModelSelection(stored: Preferences.shared.remoteModel)
+            if case .auto = selection {
+                return endpoint.isEmpty ? "Public network" : endpoint
+            }
+            return selection.label
         case .onDevice:
             if let first = node.modelManager.chatModels.first { return first.name }
             if node.modelManager.hasOnlyEmbeddingModels {
@@ -930,6 +974,15 @@ struct ChatView: View {
         let history = Array(messages.dropLast())
         let conversationHasImages = history.contains { !$0.images.isEmpty }
 
+        // ⚠️ CAPTURE THE MODEL AT SEND TIME. On-device replies never recorded
+        // which model produced them, and the loaded model changes — swap from
+        // a 3B to a 9B and every past answer in the transcript silently becomes
+        // unattributable. Network replies already carry `served_by`; a local
+        // one has to be stamped here, before the answer starts, because by the
+        // time it finishes the loaded model may already be a different one.
+        let localModel = node.modelManager.chatModels.first?.name
+            ?? node.modelManager.loadedModels.first?.name ?? ""
+
         streamTask = Task {
             do {
                 var tokenCount = 0
@@ -954,11 +1007,13 @@ struct ChatView: View {
                     msg.tokenCount = tokenCount
                     msg.endTime = endTime
                     msg.tokensPerSecond = elapsed > 0 ? Double(tokenCount) / elapsed : 0
+                    msg.modelUsed = localModel
                     msg.isStreaming = false
                 }
             } catch {
                 mutate(responseId) { msg in
                     if msg.content.isEmpty { msg.content = "Error: \(error.localizedDescription)" }
+                    msg.modelUsed = localModel
                     msg.endTime = Date()
                     msg.isStreaming = false
                     msg.isError = true
@@ -980,61 +1035,102 @@ struct ChatView: View {
         let chatMessages = messages.dropLast()
             .map { RemoteClient.ChatMessage(role: $0.role, content: $0.content) }
 
-        let model = Preferences.shared.remoteModel.isEmpty ? "default" : Preferences.shared.remoteModel
+        // One stored string decodes to model OR tier, never both — see
+        // `ModelSelection`. "default" is kept as the wire value for Automatic
+        // because that is what previous releases sent and the node still
+        // resolves it.
+        let selection = ModelSelection(stored: Preferences.shared.remoteModel)
+        let model = selection.wireModel.isEmpty ? "default" : selection.wireModel
+        let minTier = selection.wireMinTier
 
         // Try QUIC streaming first (token-by-token), fall back to HTTP
         let useQUICStream = node.connection.bootstrapState == .connected && node.connection.bootstrapTransport == .quic
 
+        // TEMPORARY: network chat has now failed to stream across three
+        // different fixes, each time diagnosed from a device by hand. These go
+        // to LogBroadcaster (served by /v1/node/logs) so the path actually
+        // taken can be read remotely instead of inferred.
+        LogBroadcaster.shared.info(
+            "chat",
+            "network send: quicStream=\(useQUICStream) " +
+            "bootstrapState=\(node.connection.bootstrapState) " +
+            "transport=\(node.connection.bootstrapTransport) " +
+            "endpointSet=\(!Preferences.shared.remoteEndpoint.isEmpty) model=\(model)")
+
         streamTask = Task {
-            do {
-                if useQUICStream {
-                    // Stream over QUIC — tokens arrive one-by-one with per-chunk timeout
-                    let rawMessages = Array(chatMessages).map { ["role": $0.role, "content": $0.content] }
-                    var tokenCount = 0
-                    var quicSucceeded = false
-                    do {
-                        let quicStream = try await node.bootstrapClient.streamInferenceWithTimeout(
-                            model: model, messages: rawMessages
-                        )
-                        for try await text in quicStream {
-                            guard !Task.isCancelled else { break }
-                            mutate(responseId) { $0.content += text }
-                            tokenCount += 1
-                        }
-                        quicSucceeded = true
-                        mutate(responseId) { msg in
-                            msg.tokenCount = tokenCount
-                            let elapsed = Date().timeIntervalSince(msg.startTime)
-                            msg.tokensPerSecond = elapsed > 0 ? Double(tokenCount) / elapsed : 0
-                            msg.isStreaming = false
-                            msg.endTime = Date()
-                            msg.routedVia = "quic"
-                        }
-                    } catch {
-                        // QUIC failed — fall back to HTTP if no tokens received yet
-                        if tokenCount == 0 && !Task.isCancelled {
-                            let result = try await remoteClient.completeWithMetadata(
-                                model: model, messages: Array(chatMessages),
-                                showReasoning: Preferences.shared.chatShowReasoning
-                            )
-                            applyNetworkResult(result, to: responseId, model: model)
-                            quicSucceeded = true
-                        } else if !quicSucceeded {
-                            throw error
-                        }
+            // ⚠️ THE VIEW NO LONGER IMPLEMENTS THIS. Transport selection,
+            // stream assembly and fallback live in `NetworkChatEngine`, which
+            // `POST /v1/node/chat/network` also drives — so what a test
+            // exercises and what a user gets are the same code. While they were
+            // two copies, an end-to-end check could pass against logic the UI
+            // never ran, which is how three "fixes" shipped without fixing
+            // anything the user could see.
+            let engine = NetworkChatEngine(
+                remote: remoteClient, bootstrap: node.bootstrapClient)
+            let outcome = await engine.send(
+                messages: Array(chatMessages),
+                model: model,
+                transport: useQUICStream ? .quic : .http,
+                showReasoning: Preferences.shared.chatShowReasoning,
+                minTier: minTier
+            ) { fragment in
+                Task { @MainActor in
+                    mutate(responseId) {
+                        $0.content += fragment
+                        $0.phase = ""
                     }
-                } else {
-                    // HTTP path — full response at once
-                    let result = try await remoteClient.completeWithMetadata(
-                        model: model, messages: Array(chatMessages)
-                    )
-                    applyNetworkResult(result, to: responseId, model: model)
                 }
-            } catch is CancellationError {
-                mutate(responseId) { $0.endTime = Date(); $0.isStreaming = false }
-            } catch {
-                await handleNetworkError(error, responseId: responseId, model: model, chatMessages: Array(chatMessages))
+            } onAttribution: { servedBy, servedModel in
+                // Applied the moment the first frame lands, not at the end:
+                // "which node is answering" is information you want WHILE you
+                // wait, and it used to read "default" because the request's
+                // placeholder model name was all the UI ever had.
+                Task { @MainActor in
+                    mutate(responseId) { msg in
+                        if let servedBy, !servedBy.isEmpty { msg.sourceNode = servedBy }
+                        if let servedModel, !servedModel.isEmpty { msg.modelUsed = servedModel }
+                    }
+                }
+            } onProgress: { label in
+                Task { @MainActor in
+                    mutate(responseId) { if $0.content.isEmpty { $0.phase = label } }
+                }
             }
+
+            await MainActor.run {
+                mutate(responseId) { msg in
+                    // A single-shot reply is assigned, not appended: nothing
+                    // was streamed into the bubble in that case.
+                    if outcome.routedVia == "http-once" { msg.content = outcome.text }
+                    if !outcome.reasoning.isEmpty { msg.reasoningContent = outcome.reasoning }
+                    if msg.content.isEmpty, let err = outcome.error {
+                        msg.content = "Error: \(err)"
+                        msg.isError = true
+                    }
+                    msg.phase = ""
+                    msg.tokenCount = outcome.chunks
+                    let elapsed = Date().timeIntervalSince(msg.startTime)
+                    msg.tokensPerSecond = elapsed > 0 ? Double(outcome.chunks) / elapsed : 0
+                    // Prefer what the server reported over what we asked for.
+                    // Asking for "default" and then labelling the reply
+                    // "default" tells the user nothing they did not type.
+                    if let served = outcome.servedModel, !served.isEmpty {
+                        msg.modelUsed = served
+                    } else if msg.modelUsed.isEmpty {
+                        msg.modelUsed = model
+                    }
+                    if let node = outcome.servedBy, !node.isEmpty { msg.sourceNode = node }
+                    msg.routedVia = outcome.routedVia
+                    msg.isStreaming = false
+                    msg.endTime = Date()
+                }
+            }
+            LogBroadcaster.shared.info(
+                "chat",
+                "network done: via=\(outcome.routedVia) chunks=\(outcome.chunks) " +
+                "streamed=\(outcome.didStream) first=\(outcome.firstChunkMs.map(String.init) ?? "-")ms " +
+                "total=\(outcome.totalMs)ms quicError=\(outcome.quicError ?? "none")")
+
             if let i = idx(for: responseId) { persist(messages[i]) }
             isGenerating = false
         }
@@ -1377,17 +1473,32 @@ struct MessageBubble: View {
     @ViewBuilder
     private var messageText: some View {
         if isThinking {
-            ThinkingIndicator()
+            // A swarm spends its first seconds fanning out. Saying WHICH models
+            // on WHICH nodes is the only moment the fabric is visible to a
+            // user — an undifferentiated dot animation for 15 seconds looks
+            // identical to a hang, which is the mistake this release keeps
+            // finding and removing.
+            if !message.phase.isEmpty {
+                HStack(spacing: 6) {
+                    ThinkingIndicator()
+                    Text(message.phase)
+                        .font(.mono(10))
+                        .foregroundStyle(Color.ledgerGold)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            } else {
+                ThinkingIndicator()
+            }
         } else if isUser {
             Text(message.content)
                 .font(.mono(13))
                 .foregroundStyle(Color.consoleText)
                 .textSelection(.enabled)
         } else {
-            Text(LocalizedStringKey(message.content))
-                .font(.system(size: 16))
-                .foregroundStyle(Color.consoleText)
-                .textSelection(.enabled)
+            MarkdownMessage(source: message.content,
+                            rendered: Preferences.shared.chatRenderMarkdown,
+                            streaming: message.isStreaming)
                 .tint(Color.relayBlue)
         }
     }

@@ -9,6 +9,86 @@ version of the Python [mycellm](https://github.com/mycellm/mycellm) core whose
 protocol and API surface this build matches. A release can bump one without the
 other.
 
+## [1.3.0] — unreleased · build 50 · core parity 0.8.0
+
+**This node now tells the fleet what it is actually able to do.** 0.8 adds an
+execution fabric on the Python side that plans a job across several models
+before running any of it. A planner is only as good as what the peers tell it,
+and this node was under-reporting on two counts that both had consequences.
+
+### Added
+
+- **Embedding models declare `execution_roles: ["embed"]`.** Build 31 stopped
+  this node from *accepting* a chat request on an embedding model. It did
+  nothing to stop peers from *sending* one, because nothing in the capability
+  advertisement said the model could not chat — `tags` carried the fact and no
+  router read it. A 0.8 planner reads `execution_roles` and excludes the model
+  from every generative role, so the refusal happens before the request is
+  dispatched rather than after it arrives. Non-embedding models declare
+  nothing, which means 0.7 semantics and leaves them eligible exactly where
+  they already were.
+
+- **Device constraints travel with the advertisement.** `DeviceState` has
+  computed thermal, power and network conditions for `/v1/node/status` for
+  several releases, and this node already demotes itself to `consumer` when it
+  is in no state to serve — but a peer could see only the demotion, never the
+  reason, and never the softer cases where the node keeps serving while
+  throttled. `hardware` now carries `ram_gb`, `available_memory_gb`,
+  `architecture`, `device_class` and the `power` / `thermal` / `network`
+  constraint blocks. Role and constraints are captured in one main-actor hop so
+  the two can never disagree — advertising `seeder` next to a stale
+  `thermal_constrained` from a later reading would be worse than either fact
+  alone.
+
+  Only what a scheduler needs is sent. Battery percentage, interface name and
+  app state stay in `/v1/node/status`: a capability payload goes to every peer
+  and is retained by each of them, and broadcasting a phone's charge level to
+  the fleet is telemetry nobody asked for.
+
+- **Serving-group and parallelism fields decode from peers** — `deployment_id`,
+  `serving_group_id`, `parallelism` — so a peer fronting an external cluster is
+  represented here as what it is rather than as an ordinary model.
+
+- **A model / quality picker, in the chat bar.** Choosing a model used to be a
+  free-text field in Settings that expected you to know a model's exact name —
+  so in practice nobody set it and every network chat went out as `default`.
+  There is now a picker where you are actually chatting: **Automatic** (still
+  the default), a **quality floor** with live counts of what each tier reaches,
+  or one named model. A tier nothing currently meets is listed as "none
+  available" rather than hidden — the point of a floor is to say what you want
+  even when nothing meets it, and hiding it would quietly downgrade the request
+  to whatever happened to be awake. The same picker is in Settings, reading one
+  shared catalogue so the two can never disagree.
+
+  A tier floor forces the HTTP path: the QUIC inference message carries model,
+  messages and sampling and nothing else, so sending a floor over it would drop
+  the constraint and answer from whatever model the peer felt like. Slower and
+  correct beats faster and wrong.
+
+- **The job queue, from your phone.** Submit work to a node and let it run when
+  a device is free and fit — an iPad on the charger tonight, a Mac that wakes in
+  the morning. Nothing is lost if the app closes. Each queued job shows why it
+  is waiting in the node's own words, and finished jobs show which node and
+  model actually answered — a job may run hours later on a different machine
+  than the one that would have taken it at submit time.
+
+- **Swarm progress while you wait.** A swarm spends its first seconds fanning
+  out; the typing indicator now says what is happening — "Asking 3 models on
+  aurora, hokulea…", then "Synthesising 3 answers…". Fifteen seconds of an
+  undifferentiated dot animation looks identical to a hang.
+
+- **Token counts from relayed and multimodal models.** Fixed on the node side
+  in 0.8.0; this build surfaces them.
+
+### Compatibility
+
+Every new field is omitted when unset, so a 0.7.x or 0.6.3 peer receives a
+byte-identical payload to the one it received before, and this build reads
+their payloads unchanged. That is asserted, not assumed: the test suite decodes
+a real CBOR advertisement produced by the Python node, and the Python suite
+decodes a real one produced by this app. Both fixtures are checked in, so
+neither implementation can drift alone.
+
 ## [1.2.0] — 2026-08-16 · build 31 · core parity 0.7.1
 
 **Leaf-node API parity, plus the two things real hardware exposed.** A dashboard

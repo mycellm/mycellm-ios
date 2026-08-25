@@ -23,6 +23,7 @@ struct SettingsView: View {
                 remoteEndpointSection
                 localAPISection
                 downloadsSection
+                appIconSection
                 displaySection
                 screensaverSection
                 storageSection
@@ -109,6 +110,11 @@ struct SettingsView: View {
 
     private var chatSection: some View {
         Section(header: Text("Chat"), footer: Text("When Show Reasoning is off (default), thinking-model output is stripped at the server so the chat only shows the answer. Turn on to see the model's step-by-step reasoning in a collapsible panel above each response.").font(.mono(10))) {
+            Toggle("Render Markdown", isOn: Binding(
+                get: { preferences.chatRenderMarkdown },
+                set: { preferences.chatRenderMarkdown = $0 }
+            ))
+            .font(.mono(13))
             Toggle("Show Reasoning", isOn: Binding(
                 get: { preferences.chatShowReasoning },
                 set: { preferences.chatShowReasoning = $0 }
@@ -181,20 +187,12 @@ struct SettingsView: View {
                     set: { preferences.remoteApiKey = $0 }
                 ))
             }
-            HStack {
-                Text("Model")
-                    .font(.mono(13))
-                    .foregroundStyle(Color.consoleDim)
-                TextField("auto", text: Binding(
-                    get: { preferences.remoteModel },
-                    set: { preferences.remoteModel = $0 }
-                ))
-                .font(.mono(12))
-                .foregroundStyle(Color.consoleText)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .multilineTextAlignment(.trailing)
-            }
+            // ⚠️ NOT A TEXT FIELD ANY MORE. It used to ask for a model's exact
+            // name, which meant in practice nobody set it and every network
+            // chat went out as "default". A picker also makes the tier floor
+            // reachable at all — it has been implemented server-side since 0.8
+            // and had no way in from this app.
+            RemoteModelPicker(preferences: preferences)
         }
     }
 
@@ -281,6 +279,19 @@ struct SettingsView: View {
                     .font(.mono(10))
                     .foregroundStyle(Color.consoleDim)
             }
+        }
+    }
+
+    // MARK: - App Icon
+
+    private var appIconSection: some View {
+        Section(
+            header: Text("App Icon"),
+            footer: Text("Changes the icon on your home screen. Red is the default.")
+                .font(.mono(10))
+        ) {
+            AppIconPicker()
+                .padding(.vertical, 4)
         }
     }
 
